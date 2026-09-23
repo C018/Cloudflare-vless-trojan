@@ -21,13 +21,12 @@ function text(content, contentType = 'text/plain; charset=utf-8') {
  * 订阅入口
  * @param {import('@cloudflare/workers-types').Request} request
  * @param {Object} config
- * @param {Object} opts {host, tls, port}
+ * @param {Object} opts {host, tls, port, wsHost, sni}
  */
 function serveSubscription(request, config, opts) {
 	const url = new URL(request.url);
 	const format = (url.searchParams.get('format') || 'base64').toLowerCase();
-	const includePreferred = url.searchParams.get('preferred') !== '0';
-	const p = { host: opts.host, port: opts.port, tls: opts.tls, includePreferred };
+	const p = { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni };
 
 	switch (format) {
 		case 'plain':
@@ -65,9 +64,9 @@ function serveCredentialSubscription(request, config, credential, opts) {
 
 	let link;
 	if (matched.kind === 'vless') {
-		link = buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath: config.wsPath, tls: opts.tls, remark: `vless-${matched.user.remark || 'node'}` });
+		link = buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath: config.wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, remark: `vless-${matched.user.remark || 'node'}` });
 	} else {
-		link = buildTrojanLink({ password: matched.user.password, host, port, wsPath: config.wsPath, tls: opts.tls, remark: `trojan-${matched.user.remark || 'node'}` });
+		link = buildTrojanLink({ password: matched.user.password, host, port, wsPath: config.wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, remark: `trojan-${matched.user.remark || 'node'}` });
 	}
 	if (format === 'plain') return text(link + '\n');
 	return text(btoa(link + '\n'));
@@ -82,7 +81,17 @@ export async function handleHttp(request, config, env) {
 	const host = resolveHost(request);
 	const tls = url.protocol === 'https:';
 	const port = Number(url.port) || (tls ? 443 : 80);
-	const opts = { host, tls, port };
+	// 入口设置：设置了入口 ip/域名、端口、sni、host 后，节点/订阅生成改用入口配置；未设置则使用当前域名
+	const entryHost = (config.entryHost || '').trim();
+	const opts = entryHost
+		? {
+			host: entryHost,
+			port: Number(config.entryPort) || 443,
+			tls: true,
+			wsHost: (config.entryWsHost || '').trim() || entryHost,
+			sni: (config.entrySni || '').trim() || entryHost,
+		}
+		: { host, port, tls, wsHost: host, sni: host };
 
 	// 订阅端点
 	if (path === '/subscribe') {
@@ -100,10 +109,10 @@ export async function handleHttp(request, config, env) {
 	if (credMatch) {
 		const credential = decodeURIComponent(credMatch[1]);
 		if (config.uuidSet.has(credential)) {
-			return html(buildConfigPage(config, { host, port, tls, credential, kind: 'vless' }));
+			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'vless' }));
 		}
 		if (config.passwordSet.has(credential)) {
-			return html(buildConfigPage(config, { host, port, tls, credential, kind: 'trojan' }));
+			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'trojan' }));
 		}
 	}
 

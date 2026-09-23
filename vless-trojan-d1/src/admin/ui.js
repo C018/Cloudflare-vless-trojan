@@ -78,6 +78,7 @@ export function buildAdminUI(tempPassword) {
     <div class="nav-item" data-tab="vless">🔑 VLESS 用户</div>
     <div class="nav-item" data-tab="trojan">🛡️ Trojan 用户</div>
     <div class="nav-item" data-tab="outbounds">🌐 出站代理</div>
+    <div class="nav-item" data-tab="entry">🚪 入口设置</div>
     <div class="nav-item" data-tab="rules">🧭 分流规则</div>
     <div class="nav-item" data-tab="settings">⚙️ 系统设置</div>
     <div class="nav-item" id="logoutBtn" style="margin-top:20px;color:var(--danger)">↩ 退出登录</div>
@@ -104,7 +105,7 @@ const state = { tab:'stats', editing:null, schema:null, records:[] };
 const TAB_DEFS = {
   vless:   { title:'VLESS 用户', api:'vless-users', fields:[{k:'uuid',label:'UUID'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
   trojan:  { title:'Trojan 用户', api:'trojan-users', fields:[{k:'password',label:'密码'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
-  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'uuid',label:'UUID(仅vless)'},{k:'path',label:'Path(仅vless)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
+  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'path',label:'Path(仅vless)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
   rules:   { title:'分流规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
 };
 
@@ -144,6 +145,7 @@ async function switchTab(tab){
   const mc = $('#mainContent');
   if (tab==='stats'){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载中...</div>'; await loadStats(); return; }
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
+  if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   const def = TAB_DEFS[tab];
   mc.innerHTML = '<div class="page-title">'+def.title+'</div><div class="toolbar"><button class="btn small" onclick="openNew()">＋ 新增</button></div><div class="card"><table><thead><tr>'+def.fields.map(f=>'<th>'+f.label+'</th>').join('')+'<th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div>';
   state.schema = def;
@@ -170,27 +172,63 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function openNew(){ state.editing=null; openModal({}); }
 function openEdit(idx){ state.editing = state.records[idx]; openModal(state.editing); }
 
+// 出站表单按类型显示的字段集合（socks5/http 显示认证，隐藏 uuid/path/tls/sni/udp；vless 反之）
+const OUTBOUND_TYPE_FIELDS = {
+  socks5: ['type','name','address','port','username','password','enable','sort'],
+  http:   ['type','name','address','port','username','password','enable','sort'],
+  vless:  ['type','name','address','port','uuid','path','tls','sni','udp','enable','sort'],
+};
+
 function openModal(record){
   const def = state.schema;
+  state.draft = Object.assign({}, record);
   $('#modalTitle').textContent = state.editing ? '编辑' : '新增';
-  $('#modalBody').innerHTML = def.fields.map(f=>{
-    const val = record[f.k];
-    if (f.type==='checkbox') return '<label><input type="checkbox" id="f_'+f.k+'" '+(val?'checked':'')+'> '+f.label+'</label>';
-    if (f.type==='select') return '<label>'+f.label+'</label><select id="f_'+f.k+'">'+f.opts.map(o=>'<option '+(o===val?'selected':'')+'>'+o+'</option>').join('')+'</select>';
-    return '<label>'+f.label+'</label><input type="'+ (f.type||'text') +'" id="f_'+f.k+'" value="'+esc(val)+'">';
-  }).join('');
+  renderModalBody();
   $('#modalMask').classList.add('show');
 }
 
-async function saveModal(){
+function renderModalBody(){
   const def = state.schema;
-  const body = {};
+  let fields = def.fields;
+  if (def.api === 'outbounds') {
+    const t = state.draft.type || 'socks5';
+    const allowed = OUTBOUND_TYPE_FIELDS[t] || OUTBOUND_TYPE_FIELDS.socks5;
+    fields = def.fields.filter((f) => allowed.indexOf(f.k) !== -1);
+  }
+  $('#modalBody').innerHTML = fields.map(f=>{
+    const val = state.draft[f.k];
+    if (f.type==='checkbox') return '<label><input type="checkbox" id="f_'+f.k+'" '+(val?'checked':'')+' onchange="collectDraft()"> '+f.label+'</label>';
+    if (f.type==='select') return '<label>'+f.label+'</label><select id="f_'+f.k+'" onchange="collectDraft();renderModalBody()">'+f.opts.map(o=>'<option '+(o===val?'selected':'')+'>'+o+'</option>').join('')+'</select>';
+    return '<label>'+f.label+'</label><input type="'+ (f.type||'text') +'" id="f_'+f.k+'" value="'+esc(val)+'" oninput="collectDraft()"'+(f.placeholder?' placeholder="'+esc(f.placeholder)+'"':'')+'>';
+  }).join('');
+}
+
+function collectDraft(){
+  const def = state.schema;
+  const draft = Object.assign({}, state.draft);
   for (const f of def.fields){
     const el = $('#f_'+f.k);
     if (!el) continue;
-    if (f.type==='checkbox') body[f.k] = el.checked ? 1 : 0;
-    else if (f.type==='number') body[f.k] = Number(el.value);
-    else body[f.k] = el.value;
+    if (f.type==='checkbox') draft[f.k] = el.checked ? 1 : 0;
+    else if (f.type==='number') draft[f.k] = Number(el.value);
+    else draft[f.k] = el.value;
+  }
+  state.draft = draft;
+}
+
+async function saveModal(){
+  collectDraft();
+  const def = state.schema;
+  const body = {};
+  for (const f of def.fields){
+    if (state.draft[f.k] !== undefined) body[f.k] = state.draft[f.k];
+  }
+  // 出站：仅发送当前类型可见字段；socks5/http 不支持 UDP，强制 udp=0
+  if (def.api === 'outbounds'){
+    const t = state.draft.type || 'socks5';
+    const allowed = OUTBOUND_TYPE_FIELDS[t] || OUTBOUND_TYPE_FIELDS.socks5;
+    for (const k of Object.keys(body)) if (allowed.indexOf(k) === -1) delete body[k];
+    if (t === 'socks5' || t === 'http') body.udp = 0;
   }
   try {
     if (state.editing) await api('/admin/api/'+def.api+'/'+state.editing.id,{method:'PUT',body:JSON.stringify(body)});
@@ -235,17 +273,10 @@ async function loadSettings(){
     const fields = [
       ['ws_path','WebSocket 路径'],
       ['default_outbound','默认出站 (direct / 出站名)'],
+      ['proxyip','proxyip（代理 IP 或域名[:端口]，访问 Cloudflare 及开 CF CDN 网站使用；仅默认出站为 direct 时生效）'],
+      ['udp_outbound','UDP 出站代理（出站名，仅 vless 支持 UDP）'],
       ['disguise_title','伪装页标题'],
       ['disguise_subtitle','伪装页副标题'],
-      ['cdnip','CDN IP'],
-      ['proxyip','中转 IP'],
-      ['ip1','优选IP 1'],['pt1','优选端口 1'],['ip2','优选IP 2'],['pt2','优选端口 2'],
-      ['ip3','优选IP 3'],['pt3','优选端口 3'],['ip4','优选IP 4'],['pt4','优选端口 4'],
-      ['ip5','优选IP 5'],['pt5','优选端口 5'],['ip6','优选IP 6'],['pt6','优选端口 6'],
-      ['ip7','优选IP 7'],['pt7','优选端口 7'],['ip8','优选IP 8'],['pt8','优选端口 8'],
-      ['ip9','优选IP 9'],['pt9','优选端口 9'],['ip10','优选IP 10'],['pt10','优选端口 10'],
-      ['ip11','优选IP 11'],['pt11','优选端口 11'],['ip12','优选IP 12'],['pt12','优选端口 12'],
-      ['ip13','优选IP 13'],['pt13','优选端口 13']
     ];
     mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
@@ -258,6 +289,31 @@ async function saveSettings(){
   const body = {};
   document.querySelectorAll('#mainContent input[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
   try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)}); toast('设置已保存'); }
+  catch(e){ toast(e.message); }
+}
+
+async function loadEntry(){
+  const mc = $('#mainContent');
+  try {
+    const s = await api('/admin/api/settings');
+    const fields = [
+      ['entry_host','入口 IP / 域名'],
+      ['entry_port','入口端口（默认 443）'],
+      ['entry_sni','入口 SNI'],
+      ['entry_ws_host','入口 Host（WebSocket Host 头）'],
+    ];
+    mc.innerHTML = '<div class="page-title">入口设置</div>'+
+      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">设置入口后，节点/订阅将使用入口 IP/域名、端口、SNI、Host 生成配置（不再使用当前域名）；未设置则使用当前域名。</div>'+
+      '<div class="card">'+
+      fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" placeholder="'+(k==='entry_port'?'443':'')+'">').join('')+
+      '<div style="margin-top:16px"><button class="btn small" onclick="saveEntry()">保存入口设置</button></div></div>';
+  } catch(e){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
+}
+
+async function saveEntry(){
+  const body = {};
+  document.querySelectorAll('#mainContent input[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
+  try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)}); toast('入口设置已保存'); }
   catch(e){ toast(e.message); }
 }
 

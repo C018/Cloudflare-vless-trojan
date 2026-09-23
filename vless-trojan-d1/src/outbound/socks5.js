@@ -85,9 +85,10 @@ export async function socks5Connect(addressType, addressRemote, portRemote, log,
 }
 
 /**
- * 解析 socks5 地址字符串 'user:pass@host:port' 或 'host:port'
+ * 解析 socks5 地址字符串 'user:pass@host:port' 或 'host:port'；
+ * 支持通过 credentials 传入外部凭据（后台 username/password 字段，优先于地址内嵌）
  */
-export function parseSocks5Address(address) {
+export function parseSocks5Address(address, credentials = {}) {
 	let [latter, former] = address.split('@').reverse();
 	let username, password, hostname, port;
 	if (former) {
@@ -99,5 +100,11 @@ export function parseSocks5Address(address) {
 	port = Number(latters.pop());
 	if (isNaN(port)) throw new Error('Invalid SOCKS address format');
 	hostname = latters.join(':');
+	if (credentials && credentials.username !== undefined && credentials.username !== null && credentials.username !== '') {
+		username = credentials.username;
+	}
+	if (credentials && credentials.password !== undefined && credentials.password !== null && credentials.password !== '') {
+		password = credentials.password;
+	}
 	return { username, password, hostname, port };
 }

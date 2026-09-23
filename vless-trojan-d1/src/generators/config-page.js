@@ -7,7 +7,7 @@ import { buildVlessLink, buildTrojanLink } from './subscription.js';
 /**
  * /{uuid|password} 页面：展示该凭据对应的节点链接
  * @param {Object} config
- * @param {Object} p {host, port, tls, credential, kind}
+ * @param {Object} p {host, port, tls, wsHost, sni, credential, kind}
  */
 export function buildConfigPage(config, p) {
 	const host = p.host;
@@ -17,10 +17,10 @@ export function buildConfigPage(config, p) {
 	let link = '';
 	let label = '';
 	if (p.kind === 'vless') {
-		link = buildVlessLink({ uuid: p.credential, host, port, wsPath, tls: p.tls, remark: 'vless-node' });
+		link = buildVlessLink({ uuid: p.credential, host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: 'vless-node' });
 		label = 'VLESS';
 	} else if (p.kind === 'trojan') {
-		link = buildTrojanLink({ password: p.credential, host, port, wsPath, tls: p.tls, remark: 'trojan-node' });
+		link = buildTrojanLink({ password: p.credential, host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: 'trojan-node' });
 		label = 'Trojan';
 	}
 

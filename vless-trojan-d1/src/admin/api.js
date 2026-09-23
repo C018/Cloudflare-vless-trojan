@@ -77,8 +77,16 @@ export async function handleAdminApi(request, config) {
 		if (method === 'PUT') {
 			const body = await readBody(request);
 			if (!body) return json({ error: 'bad body' }, 400);
+			// 白名单：仅允许写入受支持的设置项，屏蔽已废弃的 CDN/优选 等字段
+			const ALLOWED_SETTINGS = new Set([
+				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound',
+				'disguise_title', 'disguise_subtitle',
+				'entry_host', 'entry_port', 'entry_sni', 'entry_ws_host',
+				'admin_password_hash', 'admin_cookie_secret',
+			]);
 			for (const [key, value] of Object.entries(body)) {
 				if (typeof value !== 'string') continue;
+				if (!ALLOWED_SETTINGS.has(key)) continue;
 				await DB.prepare(
 					'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
 				).bind(key, value, Date.now()).run();
@@ -92,7 +100,20 @@ export async function handleAdminApi(request, config) {
 	const crudTables = {
 		'vless-users': { table: 'vless_users', cols: ['uuid', 'remark', 'enable'] },
 		'trojan-users': { table: 'trojan_users', cols: ['password', 'remark', 'enable'] },
-		'outbounds': { table: 'outbounds', cols: ['type', 'name', 'address', 'port', 'uuid', 'path', 'tls', 'udp', 'enable', 'sort'] },
+		'outbounds': {
+			table: 'outbounds',
+			cols: ['type', 'name', 'address', 'port', 'uuid', 'path', 'tls', 'udp', 'enable', 'sort', 'username', 'password', 'sni'],
+			validate(body) {
+				if (body.type !== undefined && !['socks5', 'http', 'vless'].includes(body.type)) return 'invalid outbound type';
+				if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) <= 0 || Number(body.port) > 65535)) return 'invalid port';
+				if ((body.type === 'socks5' || body.type === 'http') && !body.address) return 'address required';
+				if (body.type === 'vless' && !body.uuid) return 'vless requires uuid';
+				if ((body.username && !body.password) || (!body.username && body.password)) return 'username and password must be set together';
+				// socks5/http 不支持 UDP（仅 vless 支持），保存时强制 udp=0
+				if (body.type === 'socks5' || body.type === 'http') body.udp = 0;
+				return null;
+			}
+		},
 		'routing-rules': { table: 'routing_rules', cols: ['rule', 'outbound', 'enable', 'sort'] },
 	};
 	const crud = crudTables[resource];
@@ -133,6 +154,7 @@ async function handleCrud(method, id, crud, DB, request) {
 	if (method === 'POST') {
 		const body = await readBody(request);
 		if (!body) return json({ error: 'bad body' }, 400);
+		if (crud.validate) { const err = crud.validate(body); if (err) return json({ error: err }, 400); }
 		const keys = cols.filter((c) => body[c] !== undefined);
 		if (keys.length === 0) return json({ error: 'no fields' }, 400);
 		const placeholders = keys.map(() => '?').join(',');
@@ -145,6 +167,7 @@ async function handleCrud(method, id, crud, DB, request) {
 	if (method === 'PUT' && id) {
 		const body = await readBody(request);
 		if (!body) return json({ error: 'bad body' }, 400);
+		if (crud.validate) { const err = crud.validate(body); if (err) return json({ error: err }, 400); }
 		const keys = cols.filter((c) => body[c] !== undefined);
 		if (keys.length === 0) return json({ error: 'no fields' }, 400);
 		const sets = keys.map((c) => `${c} = ?`).join(',');
@@ -202,18 +225,21 @@ async function fetchCategory(type, category) {
 		return null;
 	}
 	const text = await res.text();
-	// 提取规则数组：geosite 为域名后缀规则，geoip 为 CIDR
+	// sing-geosite / sing-geoip rule-set 为 JSON：geosite 收集 rules[].domain 与 rules[].domain_suffix（去前导点）；geoip 收集 rules[].ip_cidr
+	let data;
+	try {
+		data = JSON.parse(text);
+	} catch (e) {
+		return null;
+	}
 	const rules = [];
-	const re = /"(\S+?)"/g;
-	let m;
-	while ((m = re.exec(text)) && rules.length < 20000) {
-		const token = m[1];
+	const push = (v) => { if (typeof v === 'string' && v && rules.length < 20000) rules.push(v); };
+	for (const rule of data.rules || []) {
 		if (type === 'geosite') {
-			if (token.startsWith('domain:') || token.startsWith('full:') || token.startsWith('keyword:') || token.startsWith('regexp:')) {
-				rules.push(token.slice(token.indexOf(':') + 1));
-			}
+			for (const d of rule.domain || []) push(d);
+			for (const d of rule.domain_suffix || []) push(String(d).replace(/^\.+/, ''));
 		} else {
-			if (token.includes('/')) rules.push(token);
+			for (const c of rule.ip_cidr || []) push(c);
 		}
 	}
 	return rules;

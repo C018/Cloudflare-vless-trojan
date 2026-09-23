@@ -30,7 +30,7 @@ export default {
 		try {
 			// 1) 后台管理
 			if (path.startsWith('/admin')) {
-				const config = await createRequestConfig(request, env);
+				const config = await createRequestConfig(request, env, { ensureAdmin: true });
 				if (path.startsWith('/admin/api/')) {
 					return await handleAdminApi(request, config);
 				}

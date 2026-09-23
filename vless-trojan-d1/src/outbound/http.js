@@ -70,9 +70,10 @@ export async function httpConnect(addressType, addressRemote, portRemote, log, p
 }
 
 /**
- * 解析 http 代理地址字符串
+ * 解析 http 代理地址字符串 'user:pass@host:port' 或 'host:port'；
+ * 支持通过 credentials 传入外部凭据（后台 username/password 字段，优先于地址内嵌）
  */
-export function parseHttpAddress(address) {
+export function parseHttpAddress(address, credentials = {}) {
 	let [latter, former] = address.split('@').reverse();
 	let username, password, hostname, port;
 	if (former) {
@@ -84,5 +85,11 @@ export function parseHttpAddress(address) {
 	port = Number(latters.pop());
 	if (isNaN(port)) throw new Error('Invalid HTTP address format');
 	hostname = latters.join(':');
+	if (credentials && credentials.username !== undefined && credentials.username !== null && credentials.username !== '') {
+		username = credentials.username;
+	}
+	if (credentials && credentials.password !== undefined && credentials.password !== null && credentials.password !== '') {
+		password = credentials.password;
+	}
 	return { username, password, hostname, port };
 }

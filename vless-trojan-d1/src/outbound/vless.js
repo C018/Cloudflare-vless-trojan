@@ -11,7 +11,7 @@ export const VLESS_OUTBOUND_TIMEOUT = 10000;
 
 /**
  * 建立 VLESS 出站连接
- * @param {Object} config {address, port, uuid, path, tls}
+ * @param {Object} config {address, port, uuid, path, tls, sni}
  * @param {number} command VLESS_CMD_TCP / VLESS_CMD_UDP
  * @param {number} addressType
  * @param {string} addressRemote
@@ -23,7 +23,9 @@ export const VLESS_OUTBOUND_TIMEOUT = 10000;
 export async function vlessOutboundConnect(config, command, addressType, addressRemote, portRemote, rawClientData, log) {
 	const security = config.tls ? 'wss' : 'ws';
 	const path = config.path && config.path.startsWith('/') ? config.path : `/${config.path || ''}`;
-	const wsURL = `${security}://${config.address}:${config.port}${path}`;
+	// SNI 支持：配置 sni 时以其作为连接主机名（Workers 平台 TLS SNI 跟随连接主机，无法与连接地址分离）
+	const wsHost = config.sni && config.sni !== '' ? config.sni : config.address;
+	const wsURL = `${security}://${wsHost}:${config.port}${path}`;
 
 	let ws;
 	try {

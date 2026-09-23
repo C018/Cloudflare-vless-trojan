@@ -9,12 +9,18 @@ import { httpConnect, parseHttpAddress } from './http.js';
 import { OUTBOUND_DIRECT, OUTBOUND_REJECT, OUTBOUND_SOCKS5, OUTBOUND_HTTP, OUTBOUND_VLESS } from '../config/constants.js';
 
 /**
+ * 直连：默认直连目标端点；若系统设置配置了 proxyip（且默认出站为 direct），
+ * 则端点替换为 proxyip:port 建立裸 TCP 连接（CF 代理 IP，用于访问 Cloudflare 相关网站，仅 TCP）
+ * @param {Object} config
  * @param {string} hostname
  * @param {number} port
  * @param {Uint8Array} initialData
  */
-function directConnect(hostname, port, initialData, log) {
-	const socket = globalThis.connect ? globalThis.connect({ hostname, port }) : undefined;
+function directConnect(config, hostname, port, initialData, log) {
+	const useProxyIp = config.proxyipHost && !config.proxyipDisabled;
+	const connHost = useProxyIp ? config.proxyipHost : hostname;
+	const connPort = useProxyIp ? Number(config.proxyipPort || 443) : port;
+	const socket = globalThis.connect ? globalThis.connect({ hostname: connHost, port: connPort }) : undefined;
 	if (!socket) {
 		log('connect unavailable');
 		return null;
@@ -54,7 +60,7 @@ export async function handleTcpOutbound(args) {
 	// 未命中规则时 default_outbound 可能是 'direct' 或出站 name
 	let ob = outbound;
 	if (!ob || ob === OUTBOUND_DIRECT) {
-		return directConnect(addressRemote, portRemote, rawClientData, log);
+		return directConnect(config, addressRemote, portRemote, rawClientData, log);
 	}
 	if (ob === OUTBOUND_REJECT) {
 		log('rejected by routing rule');
@@ -63,12 +69,12 @@ export async function handleTcpOutbound(args) {
 
 	switch (ob.type) {
 		case OUTBOUND_DIRECT:
-			return directConnect(addressRemote, portRemote, rawClientData, log);
+			return directConnect(config, addressRemote, portRemote, rawClientData, log);
 
 		case OUTBOUND_SOCKS5: {
 			let parsed;
 			try {
-				parsed = parseSocks5Address(ob.address);
+				parsed = parseSocks5Address(ob.address, { username: ob.username, password: ob.password });
 			} catch (e) {
 				log(`bad socks5 address: ${e.message}`);
 				return null;
@@ -85,7 +91,7 @@ export async function handleTcpOutbound(args) {
 		case OUTBOUND_HTTP: {
 			let parsed;
 			try {
-				parsed = parseHttpAddress(ob.address);
+				parsed = parseHttpAddress(ob.address, { username: ob.username, password: ob.password });
 			} catch (e) {
 				log(`bad http address: ${e.message}`);
 				return null;
@@ -97,7 +103,7 @@ export async function handleTcpOutbound(args) {
 		case OUTBOUND_VLESS: {
 			// vless 出站（UDP 也走这里，UDP 帧由调用方处理首包语义）
 			return vlessOutboundConnect(
-				{ address: ob.address, port: Number(ob.port), uuid: ob.uuid, path: ob.path, tls: !!ob.tls },
+				{ address: ob.address, port: Number(ob.port), uuid: ob.uuid, path: ob.path, tls: !!ob.tls, sni: ob.sni || '' },
 				isUDP ? 0x02 : 0x01,
 				addressType, addressRemote, portRemote,
 				rawClientData || new Uint8Array(0),

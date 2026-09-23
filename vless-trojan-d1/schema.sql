@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS outbounds (
   tls INTEGER DEFAULT 0,
   udp INTEGER DEFAULT 1,
   enable INTEGER DEFAULT 1,
-  sort INTEGER DEFAULT 0
+  sort INTEGER DEFAULT 0,
+  username TEXT DEFAULT '',
+  password TEXT DEFAULT '',
+  sni TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS routing_rules (
@@ -57,16 +60,15 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('admin_cookie_secret', ''),
   ('disguise_title', 'AList'),
   ('disguise_subtitle', '一个支持多存储的文件列表程序'),
+  -- proxyip：访问 Cloudflare 及开启 Cloudflare CDN 网站使用的代理 IP（可填 IP 或域名，支持 [host]:port，默认 443）；仅默认出站为 direct 时生效
   ('proxyip', ''),
-  ('cdnip', ''),
-  ('ip1', 'www.visa.com.sg'), ('ip2', 'cis.visa.com'), ('ip3', 'africa.visa.com'),
-  ('ip4', 'www.visa.com.sg'), ('ip5', 'www.visaeurope.at'), ('ip6', 'www.visa.com.mt'),
-  ('ip7', 'qa.visamiddleeast.com'), ('ip8', 'usa.visa.com'), ('ip9', 'myanmar.visa.com'),
-  ('ip10', 'www.visa.com.tw'), ('ip11', 'www.visaeurope.ch'), ('ip12', 'www.visa.com.br'),
-  ('ip13', 'www.visasoutheasteurope.com'),
-  ('pt1', '80'), ('pt2', '8080'), ('pt3', '8880'), ('pt4', '2052'), ('pt5', '2082'),
-  ('pt6', '2086'), ('pt7', '2095'), ('pt8', '443'), ('pt9', '8443'), ('pt10', '2053'),
-  ('pt11', '2083'), ('pt12', '2087'), ('pt13', '2096');
+  -- udp_outbound：UDP 出站代理（出站名，仅 vless 支持 UDP）
+  ('udp_outbound', ''),
+  -- 入口设置：设置后节点/订阅生成使用入口配置，未设置则使用当前域名
+  ('entry_host', ''),
+  ('entry_port', ''),
+  ('entry_sni', ''),
+  ('entry_ws_host', '');
 
 -- 种子：默认用户（部署后可进后台修改/删除）
 INSERT OR IGNORE INTO vless_users (uuid, remark) VALUES
@@ -75,8 +77,15 @@ INSERT OR IGNORE INTO vless_users (uuid, remark) VALUES
 INSERT OR IGNORE INTO trojan_users (password, remark) VALUES
   ('trojan', 'default');
 
--- 种子：默认出站（proxyip 语义并入出站管理）
-INSERT OR IGNORE INTO outbounds (type, name, address, port, udp, sort) VALUES
-  ('socks5', 'proxyip', 'pyip.ygkkk.dpdns.org', 443, 1, 0);
+-- 旧库迁移（已部署旧版本时需手动执行；新建库执行本文件即可）
+-- 1) outbounds 补充认证/SNI 字段：
+-- ALTER TABLE outbounds ADD COLUMN username TEXT DEFAULT '';
+-- ALTER TABLE outbounds ADD COLUMN password TEXT DEFAULT '';
+-- ALTER TABLE outbounds ADD COLUMN sni TEXT DEFAULT '';
+-- 2) 删除 proxyip 出站（proxyip 改为系统设置项，出站代理仅保留 socks5/http/vless）：
+-- DELETE FROM outbounds WHERE type = 'proxyip';
+-- 3) 删除已废弃的优选/CDN 设置项，补充新设置项：
+-- DELETE FROM settings WHERE key IN ('cdnip','ip1','ip2','ip3','ip4','ip5','ip6','ip7','ip8','ip9','ip10','ip11','ip12','ip13','pt1','pt2','pt3','pt4','pt5','pt6','pt7','pt8','pt9','pt10','pt11','pt12','pt13');
+-- INSERT OR IGNORE INTO settings (key, value) VALUES ('udp_outbound',''),('entry_host',''),('entry_port',''),('entry_sni',''),('entry_ws_host','');
 
 -- 种子：默认分流规则（空表时不插，全部走默认出站）

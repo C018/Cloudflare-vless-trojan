@@ -7,8 +7,12 @@
 - VLESS / Trojan 双入站，多 UUID / 多密码，独立启停
 - 分流引擎：`geosite:` / `geoip:` / `domain:` / `full:` / `keyword:` / `ip-cidr:` / `regexp:`，规则排序匹配
 - 出站：direct / socks5 / http / vless（vless 支持完整 UDP），规则未命中走默认出站
+- 系统设置：proxyip（CF 代理 IP，可填 IP 或域名，仅默认出站为 direct 时生效）、udp 出站代理（出站名，仅 vless 支持 UDP）
+- 入口设置：可配置入口 IP/域名、端口、SNI、Host，设置后节点/订阅改用入口配置，未设置则使用当前域名
+- 出站认证：socks5 / http 支持用户名密码认证（后台字段配置，或地址内嵌 `user:pass@host:port`，字段优先）
+- VLESS 出站：支持 TLS（ws/wss 切换）与 SNI 配置（Workers 平台限制下 SNI 跟随连接主机名，配置 SNI 后以其作为连接主机）
 - Geo 数据：GEO_KV 存分类 JSON，Cron 每日 03:00 自动更新（HTTP 可手动触发），内置冷启动兜底
-- 订阅生成：单节点 / 聚合（纯文本 / Base64 / Clash / sing-box），支持优选 IP 变体
+- 订阅生成：单节点 / 聚合（纯文本 / Base64 / Clash / sing-box）
 - 单凭据配置页：`/uuid=<uuid>` 与 `/password=<密码>` 返回专属节点链接
 - 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理），PBKDF2 + HMAC Cookie 鉴权
 - 伪装页：内嵌静态仿 Alist 文件列表页，无外部依赖
@@ -22,7 +26,7 @@ vless-trojan-d1/
 │   ├── index.js            # 入口路由（admin / cron / ws / 订阅 / 伪装页）
 │   ├── cron.js             # 定时更新 Geo 数据
 │   ├── config/
-│   │   ├── constants.js    # 协议 / 出站 / geo / 优选域名常量
+│   │   ├── constants.js    # 协议 / 出站 / geo 常量
 │   │   └── defaults.js     # D1 读取层 + 请求级配置缓存 + 初始密码生成
 │   ├── protocol/
 │   │   ├── vless.js        # VLESS 入站头解析 / 出站头构造
@@ -52,6 +56,18 @@ vless-trojan-d1/
 ├── _worker.js              # 混淆版部署产物
 └── _worker明.js            # 明码版部署产物
 ```
+
+## 出站代理配置
+
+后台「出站代理」页可管理 `socks5` / `http` / `vless` 三种出站，通过「分流规则」将匹配流量路由到指定出站。
+
+| 类型 | 必填字段 | 可选字段 | 说明 |
+|---|---|---|---|
+| socks5 | address, port | username, password | 支持用户名密码认证；也可在地址内嵌 `user:pass@host:port`，后台字段优先 |
+| http | address, port | username, password | HTTP CONNECT 代理，认证以 `Proxy-Authorization: Basic` 发送；同样支持地址内嵌凭据 |
+| vless | address, port, uuid | path, tls, sni | 基于 WebSocket 隧道，支持完整 TCP/UDP；`tls` 开启后使用 wss；`sni` 指定 TLS 连接主机名（Workers 平台限制：SNI 跟随连接主机名，配置 SNI 后以 SNI 作为连接主机） |
+
+> proxyip 已从出站类型改为系统设置项：在后台「系统设置」填写 proxyip（IP 或域名，支持 `host:port`，默认 443），当默认出站为 `direct` 时生效——目标端点替换为 proxyip 后裸 TCP 连接，客户端 TLS ClientHello / HTTP 首包原样转发，由 CF 边缘按 SNI / Host 路由，用于访问 Cloudflare 相关网站。UDP 出站代理在「系统设置」配置 `udp_outbound`（出站名，仅 vless 类型出站支持 UDP）。
 
 ## 部署步骤
 
@@ -138,4 +154,4 @@ npm run deploy       # wrangler deploy 发布
 
 ## 环境变量说明
 
-不依赖环境变量；所有配置（ws 路径、默认出站、admin 密码、优选 IP 列表 ip1-ip13/pt1-pt13、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。
+不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。

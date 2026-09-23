@@ -4,18 +4,21 @@
 
 /**
  * 生成 vless 节点链接
- * @param {Object} p {uuid, host, port, wsPath, tls, remark}
+ * @param {Object} p {uuid, host, port, wsPath, tls, remark, wsHost, sni, fp}
+ *  host 为连接地址（入口 IP/域名 或当前域名）；wsHost 为 WebSocket Host 头；sni 为 TLS SNI
  */
 export function buildVlessLink(p) {
 	const wsPath = p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`;
+	const wsHost = p.wsHost || p.host;
+	const sni = p.sni || (p.tls ? wsHost : '');
 	const params = new URLSearchParams({
 		encryption: 'none',
 		type: 'ws',
 		path: wsPath,
-		host: p.host,
+		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
 	});
-	if (p.tls && p.host) params.set('sni', p.host);
+	if (p.tls && sni) params.set('sni', sni);
 	if (p.fp) params.set('fp', p.fp);
 	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
 	return `vless://${p.uuid}@${p.host}:${p.port}?${params.toString()}#${remark}`;
@@ -26,13 +29,15 @@ export function buildVlessLink(p) {
  */
 export function buildTrojanLink(p) {
 	const wsPath = p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`;
+	const wsHost = p.wsHost || p.host;
+	const sni = p.sni || (p.tls ? wsHost : '');
 	const params = new URLSearchParams({
 		type: 'ws',
 		path: wsPath,
-		host: p.host,
+		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
 	});
-	if (p.tls && p.host) params.set('sni', p.host);
+	if (p.tls && sni) params.set('sni', sni);
 	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
 	return `trojan://${encodeURIComponent(p.password)}@${p.host}:${p.port}?${params.toString()}#${remark}`;
 }
@@ -47,26 +52,18 @@ export function resolveHost(request) {
 }
 
 /**
- * 构建聚合节点列表（vless 多 uuid + trojan 多密码 + 优选 IP 变体）
+ * 构建聚合节点列表（vless 多 uuid + trojan 多密码）
  * @param {Object} config
- * @param {Object} p {host, port, tls, includePreferred}
+ * @param {Object} p {host, port, tls, wsHost, sni}
  */
 export function buildNodeLinks(config, p) {
 	const links = [];
 	const port = p.port || (p.tls ? 443 : 80);
 	for (const u of config.vlessUsers) {
-		links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath: config.wsPath, tls: p.tls, remark: `vless-${u.remark || u.uuid.slice(0, 8)}` }));
+		links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath: config.wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: `vless-${u.remark || u.uuid.slice(0, 8)}` }));
 	}
 	for (const u of config.trojanUsers) {
-		links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath: config.wsPath, tls: p.tls, remark: `trojan-${u.remark || u.password.slice(0, 8)}` }));
-	}
-	if (p.includePreferred && config.preferredIPs.length > 0) {
-		for (const ip of config.preferredIPs) {
-			const [ipAddr, ipPort] = ip.includes(':') ? ip.split(':') : [ip, port];
-			for (const u of config.vlessUsers) {
-				links.push(buildVlessLink({ uuid: u.uuid, host: ipAddr, port: Number(ipPort), wsPath: config.wsPath, tls: true, remark: `优选-${u.remark || u.uuid.slice(0, 8)}` }));
-			}
-		}
+		links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath: config.wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: `trojan-${u.remark || u.password.slice(0, 8)}` }));
 	}
 	return links;
 }
@@ -92,6 +89,8 @@ export function buildClashSubscription(config, p) {
 	const port = p.port || 443;
 	const tls = p.tls !== false;
 	const wsPath = config.wsPath.startsWith('/') ? config.wsPath : `/${config.wsPath}`;
+	const wsHost = p.wsHost || p.host;
+	const sni = p.sni || (tls ? wsHost : '');
 	const proxies = [];
 	const vlessProxies = config.vlessUsers.map((u, i) => ({
 		name: `vless-${u.remark || i + 1}`,
@@ -101,8 +100,8 @@ export function buildClashSubscription(config, p) {
 		uuid: u.uuid,
 		network: 'ws',
 		tls,
-		'servername': tls ? p.host : undefined,
-		'ws-opts': { path: wsPath, headers: { Host: p.host } },
+		'servername': sni || undefined,
+		'ws-opts': { path: wsPath, headers: { Host: wsHost } },
 		udp: true
 	}));
 	const trojanProxies = config.trojanUsers.map((u, i) => ({
@@ -113,8 +112,8 @@ export function buildClashSubscription(config, p) {
 		password: u.password,
 		network: 'ws',
 		tls,
-		'servername': tls ? p.host : undefined,
-		'ws-opts': { path: wsPath, headers: { Host: p.host } },
+		'servername': sni || undefined,
+		'ws-opts': { path: wsPath, headers: { Host: wsHost } },
 		udp: true
 	}));
 	proxies.push(...vlessProxies, ...trojanProxies);
@@ -134,7 +133,7 @@ export function buildClashSubscription(config, p) {
 		lines.push(`    ws-opts:`);
 		lines.push(`      path: ${pr['ws-opts'].path}`);
 		lines.push(`      headers:`);
-		lines.push(`        Host: ${p.host}`);
+		lines.push(`        Host: ${wsHost}`);
 	}
 	lines.push('');
 	lines.push('rules:');
@@ -148,6 +147,8 @@ export function buildClashSubscription(config, p) {
 export function buildSingBoxSubscription(config, p) {
 	const port = p.port || 443;
 	const wsPath = config.wsPath.startsWith('/') ? config.wsPath : `/${config.wsPath}`;
+	const wsHost = p.wsHost || p.host;
+	const sni = p.sni || (p.tls ? wsHost : '');
 	const outbounds = [];
 	for (const u of config.vlessUsers) {
 		outbounds.push({
@@ -156,8 +157,8 @@ export function buildSingBoxSubscription(config, p) {
 			server: p.host,
 			server_port: port,
 			uuid: u.uuid,
-			transport: { type: 'ws', path: wsPath, headers: { Host: p.host } },
-			tls: p.tls ? { enabled: true, server_name: p.host } : null,
+			transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
+			tls: p.tls ? { enabled: true, server_name: sni } : null,
 		});
 	}
 	for (const u of config.trojanUsers) {
@@ -167,8 +168,8 @@ export function buildSingBoxSubscription(config, p) {
 			server: p.host,
 			server_port: port,
 			password: u.password,
-			transport: { type: 'ws', path: wsPath, headers: { Host: p.host } },
-			tls: p.tls ? { enabled: true, server_name: p.host } : null,
+			transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
+			tls: p.tls ? { enabled: true, server_name: sni } : null,
 		});
 	}
 	return JSON.stringify({ outbounds, log: { level: 'info' } }, null, 2);

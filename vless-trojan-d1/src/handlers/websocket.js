@@ -189,12 +189,26 @@ async function handleTCP(ws, config, addressType, addressRemote, portRemote, fir
 }
 
 async function handleUDP(ws, config, addressType, addressRemote, portRemote, firstPayload, userRecord, kind, route, log) {
+	// UDP 出站：系统设置 udp_outbound 指定出站名，从出站代理中匹配该名称的出站（仅 vless 支持 UDP）
 	let vlessOb = null;
-	if (route.outbound && route.outbound !== 'direct' && route.outbound !== 'reject') {
-		const ob = resolveOutbound(config, route.outbound);
-		if (ob !== 'direct' && ob !== 'reject' && ob.type === 'vless') vlessOb = ob;
+	const udpName = (config.udpOutbound || '').trim();
+	if (udpName) {
+		const ob = config.outboundByName[udpName];
+		if (ob && ob.type === 'vless') {
+			vlessOb = ob;
+		} else {
+			log(`udp outbound '${udpName}' not found or not vless (only vless supports udp)`);
+			safeCloseWebSocket(ws);
+			return;
+		}
+	} else {
+		// 未配置 udp 出站代理：优先路由出站（若为 vless），否则取第一个 vless 出站
+		if (route.outbound && route.outbound !== 'direct' && route.outbound !== 'reject') {
+			const ob = resolveOutbound(config, route.outbound);
+			if (ob !== 'direct' && ob !== 'reject' && ob.type === 'vless') vlessOb = ob;
+		}
+		if (!vlessOb) vlessOb = config.outbounds.find((o) => o.type === 'vless');
 	}
-	if (!vlessOb) vlessOb = config.outbounds.find((o) => o.type === 'vless');
 	if (!vlessOb) {
 		log('udp requires a vless outbound, none configured');
 		safeCloseWebSocket(ws);
@@ -203,7 +217,7 @@ async function handleUDP(ws, config, addressType, addressRemote, portRemote, fir
 
 	const firstFrame = firstPayload && firstPayload.length > 0 ? firstPayload : new Uint8Array([0, 0]);
 	const conn = await vlessOutboundConnect(
-		{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls },
+		{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls, sni: vlessOb.sni || '' },
 		0x02, addressType, addressRemote, portRemote, firstFrame, log
 	);
 	if (!conn) {

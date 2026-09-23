@@ -65,13 +65,6 @@ export const BOOTSTRAP_GEOSITE_GOOGLE = [
 	'ggpht.com', 'google.cn', 'google.com.hk', 'gvt1.com', 'gvt2.com', 'gvt3.com'
 ];
 
-// ---- visa 优选域名（承接原项目优选能力）----
-export const VISA_DOMAINS = [
-	'visa.com', 'visa.co.kr', 'visa.com.hk', 'visa.com.tw', 'visa.com.sg',
-	'visa.co.jp', 'visa.com.my', 'visa.com.au', 'visa.co.th', 'visa.com.cn',
-	'visa.co.in', 'visa.com.ph', 'visa.co.id', 'visa.co.nz', 'visa.com.vn'
-];
-
 // ---- hex lookup for uuid stringify ----
 export const byteToHex = [];
 for (let n = 0; n <= 0xff; ++n) {

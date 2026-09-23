@@ -2,7 +2,7 @@
  * Defaults + request-scoped config loader (D1 backed)
  */
 
-import { DEFAULT_WS_PATH, VISA_DOMAINS, OUTBOUND_DIRECT } from './constants.js';
+import { DEFAULT_WS_PATH, OUTBOUND_DIRECT } from './constants.js';
 import { hashPassword } from '../admin/auth.js';
 
 /**
@@ -104,7 +104,7 @@ export async function ensureAdminPassword(db) {
  * @param {Object} env
  * @returns {Promise<Object>} config
  */
-export async function createRequestConfig(request, env) {
+export async function createRequestConfig(request, env, options = {}) {
 	const { DB } = env;
 	const settings = await loadSettings(DB);
 
@@ -112,23 +112,32 @@ export async function createRequestConfig(request, env) {
 	const defaultOutbound = settings.default_outbound || OUTBOUND_DIRECT;
 	let adminPasswordHash = settings.admin_password_hash || '';
 	let adminTempPassword = null;
-	if (!adminPasswordHash) {
+	// 仅后台入口生成初始密码；避免伪装页/订阅等路由提前触发生成，导致 /admin 不再展示初始密码
+	if (!adminPasswordHash && options.ensureAdmin) {
 		const ensured = await ensureAdminPassword(DB);
 		adminPasswordHash = ensured.hash;
 		adminTempPassword = ensured.tempPassword;
 	}
-	const proxyip = settings.proxyip || '';
-	const cdnIP = settings.cdnip || '';
-
-	// 优选 IP 列表 ip1..ip13 / pt1..pt13（每项 ip:port 或裸 ip）
-	const preferredIPs = [];
-	for (let i = 1; i <= 13; i++) {
-		const ip = settings[`ip${i}`];
-		if (ip) {
-			const port = settings[`pt${i}`] || '443';
-			preferredIPs.push(port && !ip.includes(':') ? `${ip}:${port}` : ip);
+	const proxyipRaw = settings.proxyip || '';
+	// proxyip：可填 IP 或域名，支持 [host:port] 或裸 host（默认 443），仅默认出站 direct 时生效
+	let proxyipHost = '';
+	let proxyipPort = 443;
+	if (proxyipRaw) {
+		const idx = proxyipRaw.lastIndexOf(':');
+		if (idx > 0 && !proxyipRaw.includes(']') && /^\d+$/.test(proxyipRaw.slice(idx + 1))) {
+			proxyipHost = proxyipRaw.slice(0, idx);
+			proxyipPort = Number(proxyipRaw.slice(idx + 1)) || 443;
+		} else {
+			proxyipHost = proxyipRaw;
 		}
 	}
+	// UDP 出站代理：出站名（仅 vless 支持 UDP）
+	const udpOutbound = settings.udp_outbound || '';
+	// 入口设置：设置后节点/订阅生成使用入口配置，未设置则使用当前域名
+	const entryHost = settings.entry_host || '';
+	const entryPort = settings.entry_port || '';
+	const entrySni = settings.entry_sni || '';
+	const entryWsHost = settings.entry_ws_host || '';
 
 	const vlessUsers = await loadVlessUsers(DB);
 	const trojanUsers = await loadTrojanUsers(DB);
@@ -148,9 +157,15 @@ export async function createRequestConfig(request, env) {
 		defaultOutbound,
 		adminPasswordHash,
 		adminTempPassword,
-		proxyip,
-		cdnIP,
-		preferredIPs,
+		proxyipHost,
+		proxyipPort,
+		// proxyip 仅当默认出站为 direct（cloudflare:sockets）时生效
+		proxyipDisabled: defaultOutbound !== OUTBOUND_DIRECT,
+		udpOutbound,
+		entryHost,
+		entryPort,
+		entrySni,
+		entryWsHost,
 		vlessUsers,
 		trojanUsers,
 		outbounds,
@@ -160,8 +175,6 @@ export async function createRequestConfig(request, env) {
 		// 单个 uuid 校验集合（快速查找）
 		uuidSet: new Set(vlessUsers.map((u) => u.uuid)),
 		passwordSet: new Set(trojanUsers.map((u) => u.password)),
-		// visa 优选域名（节点生成时可选使用）
-		visaDomains: VISA_DOMAINS,
 		// 出站按 name 索引
 		outboundByName: outbounds.reduce((m, o) => { m[o.name] = o; return m; }, {}),
 	};
