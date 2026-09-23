@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 2b01018e553984e9a5671567693ea87d_cbc18510b71711f1a38a525400248c00
-    ReservedCode1: RTHKPk53OS5SNIY9dOLxgYW4/SeJvDBPkh0n0rLd79JJWH1a+L/2lCA1g01t/c4PSyfgt0e0e2Yf1JtuKJpU0uVR1fV84uC4u8X55dFz3248L/vGOXDWx+JZ60FaDPWaViicxyR+BycWObZsy/SkQyt8JWOJPPq0lmWI8H/EnCoI/JvPJvYt21u/sAc=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 2b01018e553984e9a5671567693ea87d_cbc18510b71711f1a38a525400248c00
-    ReservedCode2: RTHKPk53OS5SNIY9dOLxgYW4/SeJvDBPkh0n0rLd79JJWH1a+L/2lCA1g01t/c4PSyfgt0e0e2Yf1JtuKJpU0uVR1fV84uC4u8X55dFz3248L/vGOXDWx+JZ60FaDPWaViicxyR+BycWObZsy/SkQyt8JWOJPPq0lmWI8H/EnCoI/JvPJvYt21u/sAc=
----
-
 # vless-trojan-d1
 
 基于 Cloudflare Workers + D1 + KV 的 VLESS / Trojan 双协议代理面板，单文件部署（`_worker.js` 混淆版 / `_worker明.js` 明码版）。
@@ -91,6 +80,44 @@ wrangler deploy
 
 部署后可删除 `_worker明.js` 仅保留混淆版，降低被逆向概率。
 
+## 单文件手动部署（控制台操作，免本地环境）
+
+不依赖 Node.js / npm / wrangler CLI，全程在 Cloudflare 控制台完成。以下操作与 `wrangler deploy` 等效，绑定变量名与 `wrangler.toml` 保持一致（D1 绑定名 `DB`、KV 绑定名 `GEO_KV`）。
+
+### 1. 创建 D1 数据库并建表
+
+1. 打开 Cloudflare Dashboard → **Workers & Pages** → **D1** → **Create database**，命名为 `cf-vless-trojan-d1`。
+2. 进入刚创建的数据库 → **Console**，将仓库内 `schema.sql` 的完整内容粘贴进去执行（建表与种子数据一次性完成）。
+
+### 2. 创建 KV 命名空间
+
+**Workers & Pages** → **KV** → **Create a namespace**，命名为 `GEO_KV`。
+
+### 3. 创建 Worker 并粘贴代码
+
+1. **Workers & Pages** → **Create application** → **Worker**，命名为 `cf-vless-trojan-d1`。
+2. 用编辑器打开本地 `_worker.js`（混淆版部署产物），**全选复制全部内容**，在 Worker 编辑器中覆盖默认模板代码。
+3. 点击 **Deploy** 完成首次部署。
+
+### 4. 绑定 D1 与 KV
+
+1. Worker 页面 → **Settings** → **Bindings** → **Add binding**：
+   - **D1 database**：Variable name 填 `DB`，数据库选择 `cf-vless-trojan-d1`；
+   - **KV namespace**：Variable name 填 `GEO_KV`，命名空间选择 `GEO_KV`。
+2. 保存绑定后再次点击 **Deploy**，使绑定生效。
+
+### 5. 添加 Cron 触发器（推荐）
+
+Worker 页面 → **Settings** → **Triggers** → **Cron Triggers** → **Add cron trigger**，表达式填 `0 3 * * *`（每日 03:00 自动更新 Geo 数据）。
+
+### 6. （可选）绑定自定义域名
+
+Worker 页面 → **Settings** → **Domains & Routes** → **Add custom domain**，输入你的域名完成绑定。
+
+### 7. 开始使用
+
+访问 `https://cf-vless-trojan-d1.<你的子域>.workers.dev/admin`，页面会显示首次部署初始密码，登录后台即可添加用户、配置分流规则。
+
 ## 首次使用
 
 1. 访问 `https://<你的域名>/admin`，页面会显示**首次部署初始密码**（自动生成并落库，登录后请及时修改）。
@@ -112,4 +139,3 @@ npm run deploy       # wrangler deploy 发布
 ## 环境变量说明
 
 不依赖环境变量；所有配置（ws 路径、默认出站、admin 密码、优选 IP 列表 ip1-ip13/pt1-pt13、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。
-*（内容由AI生成，仅供参考）*
