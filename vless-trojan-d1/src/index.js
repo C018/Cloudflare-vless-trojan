@@ -10,12 +10,16 @@
  *  其他                            → Alist 风伪装页
  */
 
+import { connect } from 'cloudflare:sockets';
 import { createRequestConfig } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
 import { handleHttp } from './handlers/http.js';
 import { handleAdminApi } from './admin/api.js';
 import { buildAdminUI } from './admin/ui.js';
 import { handleCron, scheduled } from './cron.js';
+
+// Workers 平台 Socket 建连能力注入：direct / proxyip / socks5 / http 出站均依赖 globalThis.connect
+globalThis.connect = connect;
 
 export default {
 	/**

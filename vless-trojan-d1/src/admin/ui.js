@@ -120,7 +120,7 @@ const state = { tab:'stats', editing:null, schema:null, records:[] };
 const TAB_DEFS = {
   vless:   { title:'VLESS 用户', api:'vless-users', fields:[{k:'uuid',label:'UUID'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
   trojan:  { title:'Trojan 用户', api:'trojan-users', fields:[{k:'password',label:'密码'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
-  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'path',label:'Path(仅vless)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
+  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
   rules:   { title:'分流规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
 };
 
@@ -193,7 +193,7 @@ function openEdit(idx){ state.editing = state.records[idx]; openModal(state.edit
 const OUTBOUND_TYPE_FIELDS = {
   socks5: ['type','name','address','port','username','password','enable','sort'],
   http:   ['type','name','address','port','username','password','enable','sort'],
-  vless:  ['type','name','address','port','uuid','path','tls','sni','udp','enable','sort'],
+  vless:  ['type','name','address','port','uuid','transport','path','tls','sni','udp','enable','sort'],
 };
 
 function openModal(record){

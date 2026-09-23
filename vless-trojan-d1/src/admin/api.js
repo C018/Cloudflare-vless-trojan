@@ -103,15 +103,20 @@ export async function handleAdminApi(request, config) {
 		'trojan-users': { table: 'trojan_users', cols: ['password', 'remark', 'enable'] },
 		'outbounds': {
 			table: 'outbounds',
-			cols: ['type', 'name', 'address', 'port', 'uuid', 'path', 'tls', 'udp', 'enable', 'sort', 'username', 'password', 'sni'],
+			cols: ['type', 'name', 'address', 'port', 'uuid', 'path', 'tls', 'udp', 'enable', 'sort', 'username', 'password', 'sni', 'transport'],
 			validate(body) {
 				if (body.type !== undefined && !['socks5', 'http', 'vless'].includes(body.type)) return 'invalid outbound type';
 				if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) <= 0 || Number(body.port) > 65535)) return 'invalid port';
 				if ((body.type === 'socks5' || body.type === 'http') && !body.address) return 'address required';
-				if (body.type === 'vless' && !body.uuid) return 'vless requires uuid';
+				if (body.type === 'vless') {
+					if (!body.uuid) return 'vless requires uuid';
+					if (body.transport !== undefined && !['raw', 'ws', 'grpc', 'httpupgrade'].includes(body.transport)) return 'invalid vless transport';
+				}
 				if ((body.username && !body.password) || (!body.username && body.password)) return 'username and password must be set together';
 				// socks5/http 不支持 UDP（仅 vless 支持），保存时强制 udp=0
 				if (body.type === 'socks5' || body.type === 'http') body.udp = 0;
+				// transport 仅对 vless 有意义，非 vless 一律置默认 ws
+				if (body.type !== 'vless') body.transport = 'ws';
 				return null;
 			}
 		},
@@ -144,7 +149,7 @@ export async function handleAdminApi(request, config) {
 	// ---- netstatus：网络状态检测（多目标并行采样，约 10-15 秒）----
 	if (resource === 'netstatus' && segments[3] === 'test' && method === 'POST') {
 		try {
-			return json(await runNetstatusTest(config, console));
+			return json(await runNetstatusTest(config, (m) => console.log(m)));
 		} catch (e) {
 			return json({ ok: false, error: e.message }, 500);
 		}
@@ -154,14 +159,14 @@ export async function handleAdminApi(request, config) {
 	if (resource === 'test') {
 		if (segments[3] === 'proxyip' && method === 'POST') {
 			try {
-				return json(await testProxyIp(config, console));
+				return json(await testProxyIp(config, (m) => console.log(m)));
 			} catch (e) {
 				return json({ ok: false, error: e.message }, 500);
 			}
 		}
 		if (segments[3] === 'udp' && method === 'POST') {
 			try {
-				return json(await testUdp(config, console));
+				return json(await testUdp(config, (m) => console.log(m)));
 			} catch (e) {
 				return json({ ok: false, error: e.message }, 500);
 			}
@@ -170,7 +175,7 @@ export async function handleAdminApi(request, config) {
 			const row = await DB.prepare('SELECT * FROM outbounds WHERE id = ?').bind(Number(segments[4])).first();
 			if (!row) return json({ ok: false, error: 'outbound not found' }, 404);
 			try {
-				return json(await testOutbound(config, row, console));
+				return json(await testOutbound(config, row, (m) => console.log(m)));
 			} catch (e) {
 				return json({ ok: false, error: e.message }, 500);
 			}

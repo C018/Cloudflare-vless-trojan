@@ -267,7 +267,7 @@ export async function testUdp(config, log) {
 	let conn;
 	try {
 		conn = await vlessOutboundConnect(
-			{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls, sni: vlessOb.sni || '' },
+			{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls, sni: vlessOb.sni || '', transport: vlessOb.transport },
 			0x02, 1, '1.1.1.1', 53, frame, log
 		);
 	} catch (e) {

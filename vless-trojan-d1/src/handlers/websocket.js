@@ -10,6 +10,28 @@ import { safeCloseWebSocket } from '../outbound/stream.js';
 import { decideRoute } from '../routing/engine.js';
 
 /**
+ * 将 ws 消息统一归一化为 ArrayBuffer（支持 ArrayBuffer / 视图 / 文本帧）
+ */
+function normalizeToArrayBuffer(data) {
+	if (data instanceof ArrayBuffer) return data;
+	if (ArrayBuffer.isView(data)) {
+		return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+	}
+	if (typeof data === 'string') return new TextEncoder().encode(data).buffer;
+	return null;
+}
+
+/**
+ * 将 ws 消息统一归一化为 Uint8Array（用于写入 socket writable）
+ */
+function normalizeToUint8Array(data) {
+	if (data instanceof ArrayBuffer) return new Uint8Array(data);
+	if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+	if (typeof data === 'string') return new TextEncoder().encode(data);
+	return null;
+}
+
+/**
  * 处理 WebSocket 升级请求（代理入口）
  */
 export async function handleWebSocketUpgrade(request, config, env) {
@@ -97,7 +119,7 @@ function readFirstPacket(ws, log) {
 			if (done) return;
 			done = true;
 			cleanup();
-			resolve(event.data);
+			resolve(normalizeToArrayBuffer(event.data));
 		};
 		const onClose = () => {
 			if (done) return;
@@ -155,9 +177,9 @@ async function handleTCP(ws, config, addressType, addressRemote, portRemote, fir
 	// ws -> remote（客户端上行）
 	const onWsMessage = (event) => {
 		if (closed) return;
-		const data = event.data;
-		if (!data) return;
-		upBytes += data.byteLength || 0;
+		const data = normalizeToUint8Array(event.data);
+		if (!data || data.length === 0) return;
+		upBytes += data.byteLength;
 		try { writer.write(data).catch(() => {}); } catch (e) { /* ignore */ }
 	};
 	ws.addEventListener('message', onWsMessage);
@@ -233,9 +255,9 @@ async function handleUDP(ws, config, addressType, addressRemote, portRemote, fir
 
 	const onWsMessage = (event) => {
 		if (closed) return;
-		const data = event.data;
-		if (!data) return;
-		upBytes += data.byteLength || 0;
+		const data = normalizeToUint8Array(event.data);
+		if (!data || data.length === 0) return;
+		upBytes += data.byteLength;
 		try { writer.write(data).catch(() => {}); } catch (e) { /* ignore */ }
 	};
 	ws.addEventListener('message', onWsMessage);

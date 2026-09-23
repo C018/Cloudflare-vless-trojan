@@ -103,7 +103,7 @@ export async function handleTcpOutbound(args) {
 		case OUTBOUND_VLESS: {
 			// vless 出站（UDP 也走这里，UDP 帧由调用方处理首包语义）
 			return vlessOutboundConnect(
-				{ address: ob.address, port: Number(ob.port), uuid: ob.uuid, path: ob.path, tls: !!ob.tls, sni: ob.sni || '' },
+				{ address: ob.address, port: Number(ob.port), uuid: ob.uuid, path: ob.path, tls: !!ob.tls, sni: ob.sni || '', transport: ob.transport },
 				isUDP ? 0x02 : 0x01,
 				addressType, addressRemote, portRemote,
 				rawClientData || new Uint8Array(0),

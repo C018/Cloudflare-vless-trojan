@@ -29,6 +29,10 @@ export const OUTBOUND_SOCKS5 = 'socks5';
 export const OUTBOUND_HTTP = 'http';
 export const OUTBOUND_VLESS = 'vless';
 
+// ---- VLESS outbound transports ----
+export const OUTBOUND_TRANSPORTS = ['raw', 'ws', 'grpc', 'httpupgrade'];
+export const OUTBOUND_TRANSPORT_DEFAULT = 'ws';
+
 // ---- Geo keys ----
 export const GEO_KV_PREFIX_GEOSITE = 'geosite:';
 export const GEO_KV_PREFIX_GEOIP = 'geoip:';

@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS outbounds (
   sort INTEGER DEFAULT 0,
   username TEXT DEFAULT '',
   password TEXT DEFAULT '',
-  sni TEXT DEFAULT ''
+  sni TEXT DEFAULT '',
+  transport TEXT DEFAULT 'ws'
 );
 
 CREATE TABLE IF NOT EXISTS routing_rules (
@@ -78,10 +79,11 @@ INSERT OR IGNORE INTO trojan_users (password, remark) VALUES
   ('trojan', 'default');
 
 -- 旧库迁移（已部署旧版本时需手动执行；新建库执行本文件即可）
--- 1) outbounds 补充认证/SNI 字段：
+-- 1) outbounds 补充认证/SNI/传输字段：
 -- ALTER TABLE outbounds ADD COLUMN username TEXT DEFAULT '';
 -- ALTER TABLE outbounds ADD COLUMN password TEXT DEFAULT '';
 -- ALTER TABLE outbounds ADD COLUMN sni TEXT DEFAULT '';
+-- ALTER TABLE outbounds ADD COLUMN transport TEXT DEFAULT 'ws';
 -- 2) 删除 proxyip 出站（proxyip 改为系统设置项，出站代理仅保留 socks5/http/vless）：
 -- DELETE FROM outbounds WHERE type = 'proxyip';
 -- 3) 删除已废弃的优选/CDN 设置项，补充新设置项：
