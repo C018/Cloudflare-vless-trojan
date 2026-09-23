@@ -58,6 +58,20 @@ export function buildAdminUI(tempPassword) {
   .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; word-break:break-all; }
   .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#1c1c1e; color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; opacity:0; transition:opacity .3s; z-index:100; }
   .toast.show { opacity:1; }
+  .net-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px; }
+  .net-card { background:var(--card); border-radius:16px; padding:16px 18px; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+  .net-head { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .net-icon { font-size:22px; line-height:1; }
+  .net-name { font-size:15px; font-weight:600; flex:1; }
+  .net-latency { font-size:30px; font-weight:700; letter-spacing:-.5px; margin-bottom:12px; }
+  .net-latency .unit { font-size:13px; color:var(--muted); font-weight:400; margin-left:3px; }
+  .net-latency.fail { font-size:16px; color:var(--muted); line-height:30px; }
+  .net-dots { display:flex; gap:4px; flex-wrap:nowrap; }
+  .net-dot { width:12px; height:12px; border-radius:50%; background:#d1d1d6; flex:none; }
+  .net-dot.ok { background:#34c759; }
+  .net-dot.warn { background:#ffcc00; }
+  .net-dot.bad { background:#ff9500; }
+  .net-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:12px; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -75,6 +89,7 @@ export function buildAdminUI(tempPassword) {
   <aside class="sidebar">
     <h2>⚙️ 节点管理</h2>
     <div class="nav-item active" data-tab="stats">📊 流量统计</div>
+    <div class="nav-item" data-tab="netstatus">📡 网络状态</div>
     <div class="nav-item" data-tab="vless">🔑 VLESS 用户</div>
     <div class="nav-item" data-tab="trojan">🛡️ Trojan 用户</div>
     <div class="nav-item" data-tab="outbounds">🌐 出站代理</div>
@@ -144,6 +159,7 @@ async function switchTab(tab){
   document.querySelectorAll('.nav-item[data-tab]').forEach(el=>el.classList.toggle('active', el.dataset.tab===tab));
   const mc = $('#mainContent');
   if (tab==='stats'){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载中...</div>'; await loadStats(); return; }
+  if (tab==='netstatus'){ mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（分流规则 + 默认出站 + proxyip + 出站隧道），多目标并行、每目标 16 次采样，约 10-15 秒完成。绿色=正常，黄色/橙色=高延迟，灰色=超时/失败。</div><div class="toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   const def = TAB_DEFS[tab];
@@ -163,7 +179,8 @@ async function loadList(){
       if (f.k==='uuid'||f.k==='password') return '<td class="mono">'+esc(r[f.k])+'</td>';
       return '<td>'+esc(r[f.k])+'</td>';
     }).join('');
-    return '<tr>'+tds+'<td><button class="btn small" onclick="openEdit('+idx+')">编辑</button> <button class="btn small danger" onclick="delRow('+idx+')">删除</button></td></tr>';
+    const testBtn = def.api==='outbounds' ? '<button class="btn small" onclick="testOutbound('+idx+', event)">测试</button> ' : '';
+    return '<tr>'+tds+'<td>'+testBtn+'<button class="btn small" onclick="openEdit('+idx+')">编辑</button> <button class="btn small danger" onclick="delRow('+idx+')">删除</button></td></tr>';
   }).join('') || '<tr><td colspan="99" style="text-align:center;color:var(--muted)">暂无数据</td></tr>';
 }
 
@@ -280,7 +297,8 @@ async function loadSettings(){
     ];
     mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
-      '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="updateGeo()">更新 Geo 规则库</button></div></div>';
+      '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="updateGeo()">更新 Geo 规则库</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
+      '<div id="testResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
     state.settings = s;
   } catch(e){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
 }
@@ -320,6 +338,67 @@ async function saveEntry(){
 async function updateGeo(){
   try { const d = await api('/admin/api/geo/update',{method:'POST',body:'{}'}); toast('已更新 '+d.updated+' 个分类'); }
   catch(e){ toast('更新失败: '+e.message); }
+}
+
+// ---- 网络状态 ----
+async function runNetstatus(){
+  const grid = $('#netGrid');
+  if (!grid) return;
+  grid.innerHTML = '<div class="card" style="grid-column:1/-1">检测中，请稍候…（多目标并行采样，约 10-15 秒）</div>';
+  try {
+    const d = await api('/admin/api/netstatus/test',{method:'POST',body:'{}'});
+    renderNetCards(grid, d.targets || []);
+  } catch(e){ grid.innerHTML = '<div class="card" style="grid-column:1/-1">检测失败: '+esc(e.message)+'</div>'; }
+}
+function renderNetCards(grid, targets){
+  grid.innerHTML = targets.map(t=>{
+    const region = t.region==='cn' ? '<span class="badge">国内</span>' : '<span class="badge on">国际</span>';
+    const lat = (t.latency===null || t.latency===undefined)
+      ? '<div class="net-latency fail">超时 / 失败</div>'
+      : '<div class="net-latency">'+t.latency+'<span class="unit">ms</span></div>';
+    const dots = (t.samples||[]).map(s=>dotCls(s)).join('');
+    return '<div class="net-card"><div class="net-head"><span class="net-icon">'+esc(t.icon||'')+'</span><span class="net-name">'+esc(t.name||t.host||'')+'</span>'+region+'</div>'+lat+'<div class="net-dots">'+dots+'</div><div class="net-foot"><span>'+(t.success||0)+'/'+(t.total||0)+' 成功</span><span class="mono">'+esc(t.host||'')+'</span></div></div>';
+  }).join('');
+}
+function dotCls(ms){
+  if (ms===null || ms===undefined) return '<span class="net-dot"></span>';
+  if (ms < 200) return '<span class="net-dot ok"></span>';
+  if (ms < 500) return '<span class="net-dot warn"></span>';
+  return '<span class="net-dot bad"></span>';
+}
+
+// ---- 系统设置：proxyip / UDP 测试 ----
+async function testProxyIp(){
+  const el = $('#testResult'); if (!el) return;
+  el.innerHTML = 'proxyip 测试中…（连接 proxyip 裸 TCP 探测 Cloudflare 站点）';
+  try {
+    const r = await api('/admin/api/test/proxyip',{method:'POST',body:'{}'});
+    el.innerHTML = r.ok
+      ? '<span style="color:#34c759">proxyip 可用，延迟 '+r.latency+' ms</span>（'+esc(r.endpoint||'')+'）'
+      : '<span style="color:var(--danger)">proxyip 不可用：'+esc(r.error||'')+'</span>';
+  } catch(e){ el.innerHTML = '<span style="color:var(--danger)">proxyip 测试失败：'+esc(e.message)+'</span>'; }
+}
+async function testUdp(){
+  const el = $('#testResult'); if (!el) return;
+  el.innerHTML = 'UDP 测试中…（经 UDP 出站向 1.1.1.1:53 发起 DNS 查询）';
+  try {
+    const r = await api('/admin/api/test/udp',{method:'POST',body:'{}'});
+    el.innerHTML = r.ok
+      ? '<span style="color:#34c759">UDP 可用，延迟 '+r.latency+' ms</span>'
+      : '<span style="color:var(--danger)">UDP 不可用：'+esc(r.error||'')+'</span>';
+  } catch(e){ el.innerHTML = '<span style="color:var(--danger)">UDP 测试失败：'+esc(e.message)+'</span>'; }
+}
+
+// ---- 出站代理测试 ----
+async function testOutbound(idx, ev){
+  const r = state.records[idx];
+  const btn = ev && ev.target;
+  if (btn){ btn.disabled = true; btn.textContent = '测试中…'; }
+  try {
+    const res = await api('/admin/api/test/outbound/'+r.id,{method:'POST',body:'{}'});
+    toast(res.ok ? ('出站可用，延迟 '+res.latency+' ms') : ('出站不可用：'+(res.error||'未知错误')));
+  } catch(e){ toast('出站测试失败：'+e.message); }
+  if (btn){ btn.disabled = false; btn.textContent = '测试'; }
 }
 
 // 初始：检查登录态

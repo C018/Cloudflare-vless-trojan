@@ -4,6 +4,7 @@
 
 import { hashPassword, verifyPassword, createSessionValue, verifySessionValue, parseCookies, ADMIN_COOKIE_NAME } from './auth.js';
 import { clearGeoCache } from '../routing/geo.js';
+import { runNetstatusTest, testProxyIp, testUdp, testOutbound } from '../netprobe.js';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8' };
 
@@ -137,6 +138,42 @@ export async function handleAdminApi(request, config) {
 			return json({ ok: true, updated: count });
 		} catch (e) {
 			return json({ error: e.message }, 500);
+		}
+	}
+
+	// ---- netstatus：网络状态检测（多目标并行采样，约 10-15 秒）----
+	if (resource === 'netstatus' && segments[3] === 'test' && method === 'POST') {
+		try {
+			return json(await runNetstatusTest(config, console));
+		} catch (e) {
+			return json({ ok: false, error: e.message }, 500);
+		}
+	}
+
+	// ---- 测试：proxyip / udp / outbound ----
+	if (resource === 'test') {
+		if (segments[3] === 'proxyip' && method === 'POST') {
+			try {
+				return json(await testProxyIp(config, console));
+			} catch (e) {
+				return json({ ok: false, error: e.message }, 500);
+			}
+		}
+		if (segments[3] === 'udp' && method === 'POST') {
+			try {
+				return json(await testUdp(config, console));
+			} catch (e) {
+				return json({ ok: false, error: e.message }, 500);
+			}
+		}
+		if (segments[3] === 'outbound' && segments[4] && method === 'POST') {
+			const row = await DB.prepare('SELECT * FROM outbounds WHERE id = ?').bind(Number(segments[4])).first();
+			if (!row) return json({ ok: false, error: 'outbound not found' }, 404);
+			try {
+				return json(await testOutbound(config, row, console));
+			} catch (e) {
+				return json({ ok: false, error: e.message }, 500);
+			}
 		}
 	}
 
