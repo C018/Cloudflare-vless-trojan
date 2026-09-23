@@ -1,0 +1,175 @@
+/**
+ * Generators: single node links, subscription output (plain / clash / sing-box)
+ */
+
+/**
+ * 生成 vless 节点链接
+ * @param {Object} p {uuid, host, port, wsPath, tls, remark}
+ */
+export function buildVlessLink(p) {
+	const wsPath = p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`;
+	const params = new URLSearchParams({
+		encryption: 'none',
+		type: 'ws',
+		path: wsPath,
+		host: p.host,
+		security: p.tls ? 'tls' : 'none',
+	});
+	if (p.tls && p.host) params.set('sni', p.host);
+	if (p.fp) params.set('fp', p.fp);
+	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
+	return `vless://${p.uuid}@${p.host}:${p.port}?${params.toString()}#${remark}`;
+}
+
+/**
+ * 生成 trojan 节点链接
+ */
+export function buildTrojanLink(p) {
+	const wsPath = p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`;
+	const params = new URLSearchParams({
+		type: 'ws',
+		path: wsPath,
+		host: p.host,
+		security: p.tls ? 'tls' : 'none',
+	});
+	if (p.tls && p.host) params.set('sni', p.host);
+	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
+	return `trojan://${encodeURIComponent(p.password)}@${p.host}:${p.port}?${params.toString()}#${remark}`;
+}
+
+/**
+ * 从请求构造 host（优先自定义域名 host 头）
+ */
+export function resolveHost(request) {
+	const hostHeader = request.headers.get('Host');
+	if (!hostHeader) return 'example.com';
+	return hostHeader.split(':')[0];
+}
+
+/**
+ * 构建聚合节点列表（vless 多 uuid + trojan 多密码 + 优选 IP 变体）
+ * @param {Object} config
+ * @param {Object} p {host, port, tls, includePreferred}
+ */
+export function buildNodeLinks(config, p) {
+	const links = [];
+	const port = p.port || (p.tls ? 443 : 80);
+	for (const u of config.vlessUsers) {
+		links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath: config.wsPath, tls: p.tls, remark: `vless-${u.remark || u.uuid.slice(0, 8)}` }));
+	}
+	for (const u of config.trojanUsers) {
+		links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath: config.wsPath, tls: p.tls, remark: `trojan-${u.remark || u.password.slice(0, 8)}` }));
+	}
+	if (p.includePreferred && config.preferredIPs.length > 0) {
+		for (const ip of config.preferredIPs) {
+			const [ipAddr, ipPort] = ip.includes(':') ? ip.split(':') : [ip, port];
+			for (const u of config.vlessUsers) {
+				links.push(buildVlessLink({ uuid: u.uuid, host: ipAddr, port: Number(ipPort), wsPath: config.wsPath, tls: true, remark: `优选-${u.remark || u.uuid.slice(0, 8)}` }));
+			}
+		}
+	}
+	return links;
+}
+
+/**
+ * 纯文本订阅
+ */
+export function buildPlainSubscription(config, p) {
+	return buildNodeLinks(config, p).join('\n') + '\n';
+}
+
+/**
+ * Base64 订阅（v2rayN 等）
+ */
+export function buildBase64Subscription(config, p) {
+	return btoa(buildPlainSubscription(config, p));
+}
+
+/**
+ * Clash YAML 订阅
+ */
+export function buildClashSubscription(config, p) {
+	const port = p.port || 443;
+	const tls = p.tls !== false;
+	const wsPath = config.wsPath.startsWith('/') ? config.wsPath : `/${config.wsPath}`;
+	const proxies = [];
+	const vlessProxies = config.vlessUsers.map((u, i) => ({
+		name: `vless-${u.remark || i + 1}`,
+		type: 'vless',
+		server: p.host,
+		port,
+		uuid: u.uuid,
+		network: 'ws',
+		tls,
+		'servername': tls ? p.host : undefined,
+		'ws-opts': { path: wsPath, headers: { Host: p.host } },
+		udp: true
+	}));
+	const trojanProxies = config.trojanUsers.map((u, i) => ({
+		name: `trojan-${u.remark || i + 1}`,
+		type: 'trojan',
+		server: p.host,
+		port,
+		password: u.password,
+		network: 'ws',
+		tls,
+		'servername': tls ? p.host : undefined,
+		'ws-opts': { path: wsPath, headers: { Host: p.host } },
+		udp: true
+	}));
+	proxies.push(...vlessProxies, ...trojanProxies);
+
+	const lines = ['proxies:'];
+	for (const pr of proxies) {
+		lines.push(`  - name: "${pr.name}"`);
+		lines.push(`    type: ${pr.type}`);
+		lines.push(`    server: ${pr.server}`);
+		lines.push(`    port: ${pr.port}`);
+		if (pr.uuid) lines.push(`    uuid: ${pr.uuid}`);
+		if (pr.password) lines.push(`    password: "${pr.password}"`);
+		lines.push(`    network: ws`);
+		lines.push(`    tls: ${pr.tls}`);
+		if (pr['servername']) lines.push(`    servername: ${pr['servername']}`);
+		lines.push(`    udp: true`);
+		lines.push(`    ws-opts:`);
+		lines.push(`      path: ${pr['ws-opts'].path}`);
+		lines.push(`      headers:`);
+		lines.push(`        Host: ${p.host}`);
+	}
+	lines.push('');
+	lines.push('rules:');
+	lines.push('  - MATCH,DIRECT');
+	return lines.join('\n');
+}
+
+/**
+ * sing-box JSON 订阅
+ */
+export function buildSingBoxSubscription(config, p) {
+	const port = p.port || 443;
+	const wsPath = config.wsPath.startsWith('/') ? config.wsPath : `/${config.wsPath}`;
+	const outbounds = [];
+	for (const u of config.vlessUsers) {
+		outbounds.push({
+			type: 'vless',
+			tag: `vless-${u.remark || u.uuid.slice(0, 8)}`,
+			server: p.host,
+			server_port: port,
+			uuid: u.uuid,
+			transport: { type: 'ws', path: wsPath, headers: { Host: p.host } },
+			tls: p.tls ? { enabled: true, server_name: p.host } : null,
+		});
+	}
+	for (const u of config.trojanUsers) {
+		outbounds.push({
+			type: 'trojan',
+			tag: `trojan-${u.remark || u.password.slice(0, 8)}`,
+			server: p.host,
+			server_port: port,
+			password: u.password,
+			transport: { type: 'ws', path: wsPath, headers: { Host: p.host } },
+			tls: p.tls ? { enabled: true, server_name: p.host } : null,
+		});
+	}
+	return JSON.stringify({ outbounds, log: { level: 'info' } }, null, 2);
+}

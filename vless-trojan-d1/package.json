@@ -1,0 +1,19 @@
+{
+  "name": "vless-trojan-d1",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers VLESS/Trojan with D1 admin panel and geo routing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:plain && npm run build:obf",
+    "build:plain": "esbuild src/index.js --bundle --format=esm --target=es2022 --outfile=_worker明.js --minify --legal-comments=none",
+    "build:obf": "javascript-obfuscator _worker明.js --output _worker.js --compact true --self-defending false --string-array true --string-array-encoding base64 --string-array-threshold 0.5",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "javascript-obfuscator": "^4.1.1",
+    "wrangler": "^3.90.0"
+  }
+}
