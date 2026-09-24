@@ -11,7 +11,7 @@
 - 入口设置：可配置入口 IP/域名、端口、SNI、Host，设置后节点/订阅改用入口配置，未设置则使用当前域名
 - 出站认证：socks5 / http 支持用户名密码认证（后台字段配置，或地址内嵌 `user:pass@host:port`，字段优先）
 - VLESS 出站：支持 TLS（ws/wss 切换）与 SNI 配置（Workers 平台限制下 SNI 跟随连接主机名，配置 SNI 后以其作为连接主机）
-- Geo 数据：GEO_KV 存分类 JSON，Cron 每日 03:00 自动更新（HTTP 可手动触发），内置冷启动兜底；手动更新经 Workers Queues 异步执行（不受请求 30s 限制，失败自动重试），后台弹窗实时展示进度
+- Geo 数据：GEO_KV 存分类 JSON，Cron 每日 03:00 自动更新（HTTP 可手动触发），内置冷启动兜底；手动更新经 Workers Queues 异步执行（不受请求 30s 限制，失败自动重试），后台弹窗轮询 `/admin/api/geo/status` 实时展示逐分类进度（进度状态写 GEO_KV 的 `geo:update_status`，已修复入队后空状态显示 0/0 的问题）
 - 订阅生成：单节点 / 聚合（纯文本 / Base64 / Clash / sing-box）
 - 单凭据配置页：`/uuid=<uuid>` 与 `/password=<密码>` 返回专属节点链接
 - 网络状态检测：后台「网络状态」页按项目出站链（分流规则 + 默认出站 + proxyip + 出站隧道）在 Worker 内多目标并行探测，每目标 16 次采样，展示延迟 / 丢包 / min / max；ip.skk.moe 风格卡片，品牌色 Logo 与呼吸灯，支持自动刷新
@@ -93,10 +93,12 @@ wrangler kv namespace create GEO_KV
 ### 3. 创建 Workers Queues 队列
 
 ```bash
-wrangler queues create cf-vless-trojan-d1-geo-update
-wrangler queues create cf-vless-trojan-d1-geo-update-dlq   # 死信队列
+wrangler queue create cf-vless-trojan-d1-geo-update
+wrangler queue create cf-vless-trojan-d1-geo-update-dlq   # 死信队列
 # 生产 / 消费绑定已在 wrangler.toml 中声明
 ```
+
+> 部署前必须先创建上述两个队列：`wrangler.toml` 已声明 producer/consumer 绑定，但队列资源需提前在账号中创建，否则 `wrangler deploy` 会因队列不存在而报错。
 
 ### 4. 部署
 
@@ -140,6 +142,8 @@ wrangler deploy
 2. 同一页面再添加 **Queue（Consumer）** 绑定：队列选择 `cf-vless-trojan-d1-geo-update`，批大小 1、最大重试 2、死信队列 `cf-vless-trojan-d1-geo-update-dlq`。
 3. 保存绑定后再次点击 **Deploy**，使绑定生效。
 
+> ⚠️ **重要踩坑（控制台手动部署）**：务必在 **Settings → Bindings** 中手动添加 **Queue（Producer）** 绑定 `GEO_QUEUE` 指向 `cf-vless-trojan-d1-geo-update`。若漏加生产者绑定，`env.GEO_QUEUE` 为 `undefined`，geo 更新消息无法入队，进度弹框会一直卡在「更新中… 进度 0/0」。注意：即使 Consumer 触发器与队列资源已存在，缺少生产者绑定仍无法投递消息。
+
 ### 6. 添加 Cron 触发器（推荐）
 
 Worker 页面 → **Settings** → **Triggers** → **Cron Triggers** → **Add cron trigger**，表达式填 `0 3 * * *`（每日 03:00 自动更新 Geo 数据）。
@@ -160,7 +164,7 @@ Worker 页面 → **Settings** → **Domains & Routes** → **Add custom domain*
    - 聚合订阅：`https://<域名>/subscribe?token=<admin密码>`
    - 单凭据页：`https://<域名>/uuid=<UUID>` 或 `https://<域名>/password=<密码>`
    - 客户端订阅需带 ws path（默认 `/`，可在后台系统设置修改）。
-4. 后台可管理出站代理、分流规则、查看流量统计、运行网络状态检测，并手动触发 Geo 数据更新（弹窗实时显示进度）。
+4. 后台可管理出站代理、分流规则、查看流量统计、运行网络状态检测，并手动触发 Geo 数据更新（弹窗实时显示逐分类进度）。
 
 ## 构建
 
@@ -172,4 +176,4 @@ npm run deploy       # wrangler deploy 发布
 
 ## 环境变量说明
 
-不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时仅依赖三个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列），均已在 `wrangler.toml` 中声明。
+不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时仅依赖三个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列），均已在 `wrangler.toml` 中声明；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示）。
