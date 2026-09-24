@@ -9,7 +9,7 @@
 
 import { processVlessHeader } from '../protocol/vless.js';
 import { processTrojanHeader, isTrojanLike } from '../protocol/trojan.js';
-import { handleTcpOutbound, resolveOutbound } from '../outbound/tcp.js';
+import { handleTcpOutbound, resolveOutbound, directRouteMeta, connectViaProxyIp, markProxyIpDown } from '../outbound/tcp.js';
 import { vlessOutboundConnect } from '../outbound/vless.js';
 import { decideRoute } from '../routing/engine.js';
 
@@ -130,7 +130,46 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let upBytes = 0;
 	let downBytes = 0;
 	let closed = false;
-	const writer = remoteSocket.writable.getWriter();
+	// 直连首包等待超时（对齐 Vless_workers_pages：直连无数据 → retry proxyip）
+	const DIRECT_FIRST_PACKET_TIMEOUT = 5000;
+	// 当前 direct 路由元信息：是否已走 proxyip
+	let routeMeta = directRouteMeta.get(remoteSocket) || null;
+	let fallbackDone = false;
+	let writer = remoteSocket.writable.getWriter();
+
+	/**
+	 * 首包前直连无响应 → 回退换路：
+	 *  - 已走 proxyip：标记 down，改直连（下一次同类连接直接直连）
+	 *  - 未走 proxyip（直连被 CF 静默丢弃/重置）：改走 proxyip 重连（仅 443 TLS 流量适用）
+	 * @returns {Promise<Object|null>} 新 socket 或 null
+	 */
+	const tryFallback = async () => {
+		if (fallbackDone) return null;
+		fallbackDone = true;
+		const proxyipEnabled = !!config.proxyipHost && !config.proxyipDisabled;
+		try { await remoteSocket.close(); } catch (e) { /* ignore */ }
+		if (routeMeta && routeMeta.usedProxyIp) {
+			markProxyIpDown(log);
+			log(`proxyip ${addressRemote}:${portRemote} no first packet, degrade to direct retry`);
+			try {
+				const s = await handleTcpOutbound({
+					config, outbound: 'direct', addressType, addressRemote, portRemote, rawClientData, log
+				});
+				return s || null;
+			} catch (e) {
+				log(`direct retry error: ${e.message}`);
+				return null;
+			}
+		}
+		if (!proxyipEnabled || portRemote !== 443) return null;
+		log(`direct ${addressRemote}:${portRemote} no first packet, retry via proxyip`);
+		try {
+			return await connectViaProxyIp(config, addressRemote, portRemote, rawClientData, log);
+		} catch (e) {
+			log(`proxyip retry error: ${e.message}`);
+			return null;
+		}
+	};
 
 	// io -> remote（客户端上行）
 	const upstream = (async () => {
@@ -149,17 +188,70 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 
 	// remote -> io（远端下行）
 	try {
-		const reader = remoteSocket.readable.getReader();
+		let reader = remoteSocket.readable.getReader();
+		let gotFirst = false;
 		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (value && value.byteLength > 0) {
-				downBytes += value.byteLength;
-				await io.write(value);
+			let result;
+			if (!gotFirst && !fallbackDone) {
+				let timer = null;
+				const readPromise = reader.read().then((r) => ({ tag: 'read', ...r }));
+				const timerPromise = new Promise((res) => {
+					timer = setTimeout(() => res({ tag: 'timeout' }), DIRECT_FIRST_PACKET_TIMEOUT);
+				});
+				result = await Promise.race([readPromise, timerPromise]);
+				clearTimeout(timer);
+			} else {
+				result = { tag: 'read', ...(await reader.read()) };
+			}
+
+			if (result.tag === 'timeout') {
+				log(`no first packet in ${DIRECT_FIRST_PACKET_TIMEOUT}ms (${addressRemote}:${portRemote})`);
+				const fb = await tryFallback();
+				if (!fb) break;
+				try { writer.releaseLock(); } catch (e) { /* ignore */ }
+				remoteSocket = fb;
+				writer = remoteSocket.writable.getWriter();
+				routeMeta = directRouteMeta.get(remoteSocket) || null;
+				reader = remoteSocket.readable.getReader();
+				gotFirst = false;
+				continue;
+			}
+
+			if (result.done) break;
+			if (result.value && result.value.byteLength > 0) {
+				gotFirst = true;
+				downBytes += result.value.byteLength;
+				await io.write(result.value);
 			}
 		}
 	} catch (e) {
-		log(`tcp remote read error: ${e.message}`);
+		// 首包到达前的 socket error/close（CF 拦截常表现为连接立即被重置）→ 尝试回退换路
+		if (!fallbackDone && downBytes === 0) {
+			log(`tcp remote read error before first packet: ${e.message || e}`);
+			const fb = await tryFallback();
+			if (fb) {
+				try { writer.releaseLock(); } catch (x) { /* ignore */ }
+				remoteSocket = fb;
+				writer = remoteSocket.writable.getWriter();
+				routeMeta = directRouteMeta.get(remoteSocket) || null;
+				fallbackDone = true;
+				const reader2 = remoteSocket.readable.getReader();
+				try {
+					while (true) {
+						const { done, value } = await reader2.read();
+						if (done) break;
+						if (value && value.byteLength > 0) {
+							downBytes += value.byteLength;
+							await io.write(value);
+						}
+					}
+				} catch (e2) {
+					log(`fallback remote read error: ${e2.message || e2}`);
+				}
+			}
+		} else {
+			log(`tcp remote read error: ${e.message || e}`);
+		}
 	}
 
 	closed = true;
@@ -169,7 +261,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	// 等待上行循环退出（避免竞态后 io 已关闭仍 write）
 	await upstream.catch(() => {});
 
-	await recordTraffic(config, userRecord, kind, upBytes, downBytes, log);
+	recordTraffic(config, userRecord, kind, upBytes, downBytes, log);
 }
 
 async function handleUDP(io, config, addressType, addressRemote, portRemote, firstPayload, userRecord, kind, route, log) {
@@ -247,7 +339,7 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 	try { await io.close(); } catch (e) { /* ignore */ }
 	await upstream.catch(() => {});
 
-	await recordTraffic(config, userRecord, kind, upBytes, downBytes, log);
+	recordTraffic(config, userRecord, kind, upBytes, downBytes, log);
 }
 
 /**

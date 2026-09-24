@@ -6,6 +6,40 @@ import { DEFAULT_WS_PATH, OUTBOUND_DIRECT, INBOUND_TRANSPORT_DEFAULT } from './c
 import { hashPassword } from '../admin/auth.js';
 
 /**
+ * 进程级 D1 配置缓存：TTL 30s + pending Promise 防击穿。
+ * 消除每个新连接建连路径上的 D1 查询延迟；后台写接口成功后主动失效（见 api.js）。
+ */
+const CONFIG_CACHE_TTL = 30_000;
+const configCache = {
+	settings: { p: null, ts: 0 },
+	vlessUsers: { p: null, ts: 0 },
+	trojanUsers: { p: null, ts: 0 },
+	outbounds: { p: null, ts: 0 },
+	routingRules: { p: null, ts: 0 },
+};
+
+/** 带缓存的加载：TTL 内命中直接复用；未命中时并发请求共享同一个 pending Promise 防止击穿 */
+function cachedLoad(key, loader) {
+	const e = configCache[key];
+	const now = Date.now();
+	if (e.p && now - e.ts < CONFIG_CACHE_TTL) return e.p;
+	const p = Promise.resolve().then(loader).catch(() => null);
+	e.p = p;
+	e.ts = now;
+	return p;
+}
+
+/** 后台写接口成功后主动失效对应缓存，避免改动 30s 内不生效 */
+export function invalidateConfigCache(kind) {
+	if (kind === 'all') {
+		for (const k of Object.keys(configCache)) { configCache[k].p = null; configCache[k].ts = 0; }
+		return;
+	}
+	const e = configCache[kind];
+	if (e) { e.p = null; e.ts = 0; }
+}
+
+/**
  * 从 D1 读取 settings 表为 map
  * @param {import('@cloudflare/workers-types').D1Database} db
  * @returns {Promise<Object<string,string>>}
@@ -162,6 +196,7 @@ export async function ensureAdminPassword(db) {
 		await db.prepare(
 			'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
 		).bind('admin_password_hash', hash, Date.now()).run();
+		invalidateConfigCache('settings');
 	} catch (e) { /* ignore */ }
 	return { hash, tempPassword };
 }
@@ -174,7 +209,7 @@ export async function ensureAdminPassword(db) {
  */
 export async function createRequestConfig(request, env, options = {}) {
 	const { DB } = env;
-	const settings = await loadSettings(DB);
+	const settings = await cachedLoad('settings', () => loadSettings(DB));
 
 	const wsPath = settings.ws_path || DEFAULT_WS_PATH;
 	const entryTransport = settings.entry_transport || INBOUND_TRANSPORT_DEFAULT;
@@ -208,10 +243,10 @@ export async function createRequestConfig(request, env, options = {}) {
 	const entrySni = settings.entry_sni || '';
 	const entryWsHost = settings.entry_ws_host || '';
 
-	const vlessUsers = await loadVlessUsers(DB);
-	const trojanUsers = await loadTrojanUsers(DB);
-	const outbounds = await loadOutbounds(DB);
-	const routingRules = await loadRoutingRules(DB);
+	const vlessUsers = await cachedLoad('vlessUsers', () => loadVlessUsers(DB));
+	const trojanUsers = await cachedLoad('trojanUsers', () => loadTrojanUsers(DB));
+	const outbounds = await cachedLoad('outbounds', () => loadOutbounds(DB));
+	const routingRules = await cachedLoad('routingRules', () => loadRoutingRules(DB));
 
 	// 到期流量重置（请求级幂等：traffic_reset_at 已过期才清零）
 	await Promise.all([

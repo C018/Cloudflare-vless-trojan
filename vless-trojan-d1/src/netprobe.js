@@ -14,14 +14,15 @@ import { wrapUdpFrame, readUdpFrames } from './outbound/udp.js';
 // ---- 常量 ----
 // 网络状态检测目标：name 展示名 / host 探测主机 / port 探测端口 / region cn=国内 intl=国际 / icon 图标
 export const NETSTAT_TARGETS = [
-	{ name: '字节跳动', host: 'www.bytedance.com', port: 80, region: 'cn', icon: '🎵' },
-	{ name: 'Bilibili', host: 'www.bilibili.com', port: 80, region: 'cn', icon: '📺' },
-	{ name: '微信', host: 'weixin.qq.com', port: 80, region: 'cn', icon: '💬' },
-	{ name: '淘宝', host: 'www.taobao.com', port: 80, region: 'cn', icon: '🛒' },
-	{ name: 'GitHub', host: 'github.com', port: 80, region: 'intl', icon: '🐙' },
-	{ name: 'jsDelivr', host: 'cdn.jsdelivr.net', port: 80, region: 'intl', icon: '📦' },
-	{ name: 'Cloudflare', host: 'www.cloudflare.com', port: 80, region: 'intl', icon: '☁️' },
-	{ name: 'YouTube', host: 'www.youtube.com', port: 80, region: 'intl', icon: '▶️' },
+	{ name: '字节跳动', host: 'www.bytedance.com', port: 80, region: 'cn', icon: '🎵', color: '#325AB4' },
+	{ name: 'Bilibili', host: 'www.bilibili.com', port: 80, region: 'cn', icon: '📺', color: '#FB7299' },
+	{ name: '微信', host: 'weixin.qq.com', port: 80, region: 'cn', icon: '💬', color: '#07C160' },
+	{ name: '淘宝', host: 'www.taobao.com', port: 80, region: 'cn', icon: '🛒', color: '#FF5000' },
+	{ name: 'GitHub', host: 'github.com', port: 80, region: 'intl', icon: '🐙', color: '#24292F' },
+	{ name: 'jsDelivr', host: 'cdn.jsdelivr.net', port: 80, region: 'intl', icon: '📦', color: '#E84D0E' },
+	{ name: 'Cloudflare', host: 'www.cloudflare.com', port: 80, region: 'intl', icon: '☁️', color: '#F6821F' },
+	{ name: 'Google', host: 'www.google.com', port: 80, region: 'intl', icon: '🔍', color: '#4285F4' },
+	{ name: 'YouTube', host: 'www.youtube.com', port: 80, region: 'intl', icon: '▶️', color: '#FF0000' },
 ];
 // 每个目标采样次数（卡片一行 16 个圆点）
 export const NETSTAT_SAMPLES = 16;
@@ -172,7 +173,10 @@ async function probeTarget(config, target, log) {
 	}
 	const ok = samples.filter((v) => v !== null);
 	const latency = ok.length > 0 ? Math.round(ok.reduce((a, b) => a + b, 0) / ok.length) : null;
-	return { ...target, samples, latency, success: ok.length, total: samples.length };
+	const min = ok.length > 0 ? Math.min(...ok) : null;
+	const max = ok.length > 0 ? Math.max(...ok) : null;
+	const loss = samples.length > 0 ? Math.round(((samples.length - ok.length) / samples.length) * 100) : 100;
+	return { ...target, samples, latency, min, max, loss, success: ok.length, total: samples.length };
 }
 
 /**
@@ -242,7 +246,7 @@ function buildDnsQuery(domain) {
 }
 
 /**
- * UDP 测试：按 udp_outbound 配置的 vless 出站发 VLESS_CMD_UDP 帧做 DNS 查询（1.1.1.1:53 查 example.com）
+ * UDP 测试：按 udp_outbound 配置的 vless 出站发 VLESS_CMD_UDP 帧做 DNS 查询（8.8.8.8:53 查 example.com）
  * @returns {Promise<{ok:boolean, latency?:number, bytes?:number, error?:string}>}
  */
 export async function testUdp(config, log) {
@@ -268,7 +272,7 @@ export async function testUdp(config, log) {
 	try {
 		conn = await vlessOutboundConnect(
 			{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls, sni: vlessOb.sni || '', transport: vlessOb.transport },
-			0x02, 1, '1.1.1.1', 53, frame, log
+			0x02, 1, '8.8.8.8', 53, frame, log
 		);
 	} catch (e) {
 		return { ok: false, error: `UDP 出站连接失败: ${e.message}` };

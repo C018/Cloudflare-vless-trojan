@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "npm run build:plain && npm run build:obf",
-    "build:plain": "esbuild src/index.js --bundle --format=esm --target=es2022 --outfile=_worker明.js --minify --legal-comments=none",
+    "build:plain": "esbuild src/index.js --bundle --format=esm --target=es2022 --outfile=_worker明.js --minify --legal-comments=none --external:cloudflare:sockets",
     "build:obf": "javascript-obfuscator _worker明.js --output _worker.js --compact true --self-defending false --string-array true --string-array-encoding base64 --string-array-threshold 0.5",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"

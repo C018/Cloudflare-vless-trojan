@@ -72,6 +72,59 @@ export function buildAdminUI(tempPassword) {
   .net-dot.warn { background:#ffcc00; }
   .net-dot.bad { background:#ff9500; }
   .net-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:12px; color:var(--muted); }
+  /* ---- Geo 更新进度弹框 ---- */
+  .geo-modal { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:60; }
+  .geo-modal.show { display:flex; }
+  .geo-box { background:var(--card); border-radius:20px; padding:24px 26px; width:430px; max-width:92vw; box-shadow:0 8px 32px rgba(0,0,0,.18); }
+  .geo-box h3 { font-size:17px; margin-bottom:6px; }
+  .geo-sub { font-size:12px; color:var(--muted); margin-bottom:14px; }
+  .geo-bar { height:8px; border-radius:4px; background:var(--bg); overflow:hidden; margin-bottom:12px; }
+  .geo-bar > div { height:100%; width:0; background:linear-gradient(90deg,#0a84ff,#34c759); border-radius:4px; transition:width .4s ease; }
+  .geo-line { font-size:13px; color:var(--text); margin-bottom:6px; line-height:1.6; word-break:break-all; }
+  .geo-line .dim { color:var(--muted); }
+  .geo-actions { display:flex; gap:8px; margin-top:16px; justify-content:flex-end; }
+  .geo-actions .btn { width:auto; padding:8px 16px; }
+  .geo-done { display:block; font-size:13px; padding:8px 12px; border-radius:10px; margin-bottom:8px; }
+  .geo-done.ok { background:#e8f8ef; color:#1d7a3f; }
+  .geo-done.err { background:#ffeceb; color:#d70015; }
+  /* ---- 网络状态：ip.skk.moe 风格动态探测 ---- */
+  .net-toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  .net-toolbar .auto-refresh { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; user-select:none; }
+  .net-toolbar .net-update-time { font-size:12px; color:var(--muted); margin-left:auto; }
+  .net-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+  .net-card { background:var(--card); border-radius:18px; padding:16px 18px; box-shadow:0 1px 4px rgba(0,0,0,.04); position:relative; overflow:hidden; animation:netIn .5s ease both; }
+  .net-card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--nc,#34c759); opacity:.85; }
+  .net-card.warn-state::before { background:#ffcc00; }
+  .net-card.bad-state::before { background:#ff3b30; }
+  @keyframes netIn { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:none; } }
+  .net-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .net-logo { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:18px; background:#e9e9ee; color:#fff; flex:none; box-shadow:0 2px 6px rgba(0,0,0,.14); }
+  .net-name { font-size:15px; font-weight:700; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .net-status-line { display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+  .net-pulse { width:10px; height:10px; border-radius:50%; background:#9aa0a6; flex:none; }
+  .net-pulse.good { background:#34c759; animation:pulse 2s ease infinite; }
+  .net-pulse.slow { background:#ffcc00; animation:pulse 2.6s ease infinite; }
+  .net-pulse.fail { background:#ff3b30; animation:pulse 1.4s ease infinite; }
+  @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(52,199,89,.5); } 70% { box-shadow:0 0 0 8px rgba(52,199,89,0); } 100% { box-shadow:0 0 0 0 rgba(52,199,89,0); } }
+  .net-latency { font-size:30px; font-weight:800; letter-spacing:-.5px; line-height:1.1; }
+  .net-latency .unit { font-size:13px; color:var(--muted); font-weight:400; margin-left:3px; }
+  .net-latency.fail { font-size:15px; color:var(--muted); line-height:30px; }
+  .net-meta { display:flex; gap:14px; font-size:12px; color:var(--muted); margin:8px 0 10px; }
+  .net-meta b { color:var(--text); font-weight:600; }
+  .net-dots { display:flex; gap:4px; flex-wrap:nowrap; }
+  .net-dot { width:12px; height:12px; border-radius:50%; background:#e3e3e8; flex:none; transition:background .3s; }
+  .net-dot.ok { background:#34c759; }
+  .net-dot.warn { background:#ffcc00; }
+  .net-dot.bad { background:#ff9500; }
+  /* 探测中动效：骨架扫描 */
+  .net-latency.scan, .net-meta.scan { background:linear-gradient(90deg,#f2f2f7 25%,#e4e4ea 37%,#f2f2f7 63%); background-size:400% 100%; animation:scanMove 1.2s ease infinite; border-radius:6px; }
+  .net-latency.scan { width:55%; height:30px; }
+  .net-meta.scan { width:70%; height:14px; }
+  @keyframes scanMove { 0% { background-position:100% 0; } 100% { background-position:-100% 0; } }
+  .net-dot.scan-dot { background:#ececf1; animation:dotBlink 1.4s ease infinite; }
+  .net-dot.scan-dot:nth-child(3n) { animation-delay:.2s; }
+  .net-dot.scan-dot:nth-child(5n) { animation-delay:.4s; }
+  @keyframes dotBlink { 0%,100% { opacity:.25; } 50% { opacity:1; } }
   /* ---- Apple style refinements ---- */
   body { -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
   .card { transition:transform .15s ease, box-shadow .15s ease; }
@@ -88,9 +141,10 @@ export function buildAdminUI(tempPassword) {
   /* ---- Responsive: Phone ---- */
   @media (max-width:768px){
     .login-card { width:calc(100% - 40px); border-radius:20px; padding:32px 24px; }
-    .sidebar { position:fixed; top:auto; left:0; right:0; bottom:0; width:100%; height:58px; display:flex; align-items:center; justify-content:space-around; border-top:1px solid var(--border); border-right:0; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.9); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); z-index:40; }
+    .sidebar { position:fixed; top:auto; left:0; right:0; bottom:0; width:100%; height:58px; display:flex; align-items:center; justify-content:flex-start; overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; scrollbar-width:none; border-top:1px solid var(--border); border-right:0; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.9); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); z-index:40; }
+    .sidebar::-webkit-scrollbar { display:none; }
     .sidebar h2 { display:none; }
-    .nav-item { padding:6px 2px; font-size:10px; text-align:center; border-radius:8px; margin:0; white-space:nowrap; flex:1; }
+    .nav-item { padding:6px 10px; font-size:10px; text-align:center; border-radius:8px; margin:0 2px; white-space:nowrap; flex:0 0 auto; min-width:60px; }
     .nav-item.active { background:var(--accent); }
     .nav-item#logoutBtn { margin-top:0; }
     .main { margin-left:0; padding:16px 12px 84px; }
@@ -139,6 +193,20 @@ export function buildAdminUI(tempPassword) {
     <div class="actions">
       <button class="btn small danger" onclick="closeModal()">取消</button>
       <button class="btn small" onclick="saveModal()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="geo-modal" id="geoModal">
+  <div class="geo-box">
+    <h3>🌏 更新 Geo 规则库</h3>
+    <div class="geo-sub" id="geoSub">正在准备…</div>
+    <div class="geo-bar"><div id="geoBarFill"></div></div>
+    <div class="geo-line" id="geoLine1">初始化…</div>
+    <div class="geo-line" id="geoLine2"></div>
+    <div class="geo-line" id="geoLine3"></div>
+    <div class="geo-actions">
+      <button class="btn small" onclick="closeGeoModal()">关闭</button>
     </div>
   </div>
 </div>
@@ -208,7 +276,7 @@ async function switchTab(tab){
   document.querySelectorAll('.nav-item[data-tab]').forEach(el=>el.classList.toggle('active', el.dataset.tab===tab));
   const mc = $('#mainContent');
   if (tab==='stats'){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载中...</div>'; await loadStats(); return; }
-  if (tab==='netstatus'){ mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（分流规则 + 默认出站 + proxyip + 出站隧道），多目标并行、每目标 16 次采样，约 10-15 秒完成。绿色=正常，黄色/橙色=高延迟，灰色=超时/失败。</div><div class="toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
+  if (tab==='netstatus'){ clearNetAuto(); mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（分流规则 + 默认出站 + proxyip + 出站隧道），全部探测在 Worker 内完成，多目标并行、每目标 16 次采样，约 10-15 秒完成。绿=正常，黄=高延迟，红/灰=失败。</div><div class="net-toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button><label class="auto-refresh"><input type="checkbox" id="netAuto" checked onchange="scheduleNetAuto()"> 自动刷新</label><span class="net-update-time" id="netUpdateTime"></span></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   const def = TAB_DEFS[tab];
@@ -384,7 +452,10 @@ function fmtDate(sec){
 async function loadSettings(){
   const mc = $('#mainContent');
   try {
-    const s = await api('/admin/api/settings');
+    const [s, ver] = await Promise.all([
+      api('/admin/api/settings'),
+      api('/admin/api/version').catch(()=>({ version:'' }))
+    ]);
     const fields = [
       ['ws_path','入站路径（ws / grpc / h2 共享；用户未自定义路径时回退到此值）'],
       ['default_outbound','默认出站 (direct / 出站名)'],
@@ -394,6 +465,9 @@ async function loadSettings(){
       ['disguise_subtitle','伪装页副标题'],
     ];
     mc.innerHTML = '<div class="page-title">系统设置</div>'+
+      '<div class="card" style="display:flex;align-items:center;justify-content:space-between;background:#f0f4ff;color:#2b5db3;font-size:13px;border-radius:10px;padding:10px 16px;margin-bottom:16px">'+
+        '<span>系统版本</span><b id="sysVersion">'+(ver.version?esc(ver.version):'未知')+'</b>'+
+      '</div>'+
       '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
       '<div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
@@ -438,32 +512,132 @@ async function saveEntry(){
 }
 
 async function updateGeo(){
+  const m = $('#geoModal'); if (!m) return;
+  m.classList.add('show');
+  const fill = $('#geoBarFill'), line1 = $('#geoLine1'), line2 = $('#geoLine2'), line3 = $('#geoLine3'), sub = $('#geoSub');
+  fill.style.width = '0%';
+  sub.textContent = '正在准备…';
+  line1.innerHTML = '提交更新请求…'; line2.innerHTML = ''; line3.innerHTML = '';
   try {
     const d = await api('/admin/api/geo/update',{method:'POST',body:'{}'});
-    const msg = '已更新 '+d.updated+' / '+d.total+' 个分类' + ((d.failed && d.failed.length) ? ('；失败: '+d.failed.join(', ')) : '');
-    toast(msg);
+    if (d && d.updating) {
+      line1.innerHTML = '更新已启动，正在拉取规则库（约 1-3 分钟）…';
+      pollGeoStatus();
+    } else if (d && (d.updated!==undefined)) {
+      finishGeo({ state:'done', updated:d.updated, total:d.total, failed:d.failed||[] });
+    } else {
+      line1.innerHTML = '服务返回异常，请稍后重试';
+    }
+  } catch(e){ failGeo({ message: e.message }); }
+}
+function closeGeoModal(){ const m = $('#geoModal'); if (m) m.classList.remove('show'); }
+function finishGeo(p){
+  const line1 = $('#geoLine1'), line2 = $('#geoLine2'), line3 = $('#geoLine3'), sub = $('#geoSub'), fill = $('#geoBarFill');
+  fill.style.width = '100%';
+  line1.innerHTML = ''; line2.innerHTML = '';
+  line3.innerHTML = '<span class="geo-done ok">更新完成：成功 '+p.updated+' / '+p.total+' 个分类'+(p.failed && p.failed.length ? '，失败 '+p.failed.length+' 个' : '')+'</span>';
+  if (p.failed && p.failed.length) line3.innerHTML += '<div class="dim" style="font-size:12px">失败项：'+esc(p.failed.slice(0,8).join('、'))+'</div>';
+  sub.textContent = '版本时间：'+new Date().toLocaleString();
+}
+function failGeo(p){
+  const line1 = $('#geoLine1'), line2 = $('#geoLine2'), line3 = $('#geoLine3'), fill = $('#geoBarFill');
+  fill.style.width = '100%';
+  line1.innerHTML = '<span class="geo-done err">更新失败：'+esc(p.message||'未知错误')+'</span>';
+  line2.innerHTML = ''; line3.innerHTML = '';
+}
+async function pollGeoStatus(){
+  const line1 = $('#geoLine1'), line2 = $('#geoLine2'), line3 = $('#geoLine3'), fill = $('#geoBarFill');
+  const started = Date.now();
+  let idleStart = null;
+  while (Date.now() - started < 360000) {
+    let st = null;
+    try { st = await api('/admin/api/geo/status'); } catch(e){ /* 继续轮询 */ }
+    if (st) {
+      const p = st.status || {};
+      if (st.updating) {
+        const step = p.step || 0, total = p.total || 0;
+        const pct = total > 0 ? Math.min(100, Math.round(step/total*100)) : 2;
+        fill.style.width = pct + '%';
+        line1.innerHTML = esc(p.message || '更新中…');
+        line2.innerHTML = '进度：<b>'+step+'</b> / '+total+'（成功 '+(p.updated||0)+'，失败 '+((p.failed||[]).length)+'）';
+        line3.innerHTML = p.current ? '当前：<span class="dim">'+esc(p.current)+'</span>' : '';
+        // 已入队但长时间无进展：提示消费者可能未生效（队列未创建 / consumer 未绑定 / 粘贴部署无队列）
+        if (step === 0 && p.message === '已入队，等待消费者执行…') {
+          if (idleStart === null) idleStart = Date.now();
+          if (Date.now() - idleStart > 30000) {
+            line3.innerHTML = '<span class="geo-done err">队列消费者未生效：请确认已创建队列（wrangler queue create cf-vless-trojan-d1-geo-update / -dlq）且 wrangler.toml 已配置 producer/consumer；控制台粘贴部署不支持队列，请改用 wrangler deploy</span>';
+          }
+        } else {
+          idleStart = null;
+        }
+      } else if (p.state==='done') {
+        finishGeo(p);
+        return;
+      } else if (p.state==='error') {
+        failGeo(p);
+        return;
+      } else if (!st.updating && st.version) {
+        finishGeo({ state:'done', updated:p.updated||0, total:p.total||0, failed:p.failed||[] });
+        return;
+      }
+    }
+    await new Promise(r=>setTimeout(r,1500));
   }
-  catch(e){ toast('更新失败: '+e.message); }
+  line1.innerHTML = '轮询超时，请稍后刷新页面查看 geo:version 是否更新';
 }
 
-// ---- 网络状态 ----
+// ---- 网络状态：Worker 探测 + 前端渲染（ip.skk.moe 风格） ----
+const SCAN_TARGETS = [
+  {name:'字节跳动',icon:'🎵',color:'#325AB4'},{name:'Bilibili',icon:'📺',color:'#FB7299'},
+  {name:'微信',icon:'💬',color:'#07C160'},{name:'淘宝',icon:'🛒',color:'#FF5000'},
+  {name:'GitHub',icon:'🐙',color:'#24292F'},{name:'jsDelivr',icon:'📦',color:'#E84D0E'},
+  {name:'Cloudflare',icon:'☁️',color:'#F6821F'},{name:'Google',icon:'🔍',color:'#4285F4'},
+  {name:'YouTube',icon:'▶️',color:'#FF0000'}
+];
+let netTimer = null;
+function setNetTimer(){ netTimer = setTimeout(scheduleNetAuto, 60000); }
+function clearNetAuto(){ if (netTimer){ clearTimeout(netTimer); netTimer = null; } }
+function scheduleNetAuto(){
+  clearNetAuto();
+  const cb = $('#netAuto'); if (!cb) return;
+  if (cb.checked) setNetTimer();
+}
 async function runNetstatus(){
   const grid = $('#netGrid');
   if (!grid) return;
-  grid.innerHTML = '<div class="card" style="grid-column:1/-1">检测中，请稍候…（多目标并行采样，约 10-15 秒）</div>';
+  renderScanCards(grid);
   try {
     const d = await api('/admin/api/netstatus/test',{method:'POST',body:'{}'});
     renderNetCards(grid, d.targets || []);
+    const t = $('#netUpdateTime'); if (t) t.textContent = '更新于 ' + new Date(d.ts||Date.now()).toLocaleTimeString();
   } catch(e){ grid.innerHTML = '<div class="card" style="grid-column:1/-1">检测失败: '+esc(e.message)+'</div>'; }
+  scheduleNetAuto();
+}
+function renderScanCards(grid){
+  grid.innerHTML = SCAN_TARGETS.map(t=>{
+    const dots = Array(16).fill('<span class="net-dot scan-dot"></span>').join('');
+    return '<div class="net-card"><div class="net-head"><span class="net-logo" style="background:'+esc(t.color)+'">'+esc(t.icon)+'</span><span class="net-name">'+esc(t.name)+'</span></div><div class="net-status-line"><span class="net-pulse"></span><div class="net-latency scan"></div></div><div class="net-meta scan"></div><div class="net-dots">'+dots+'</div></div>';
+  }).join('');
 }
 function renderNetCards(grid, targets){
   grid.innerHTML = targets.map(t=>{
     const region = t.region==='cn' ? '<span class="badge">国内</span>' : '<span class="badge on">国际</span>';
-    const lat = (t.latency===null || t.latency===undefined)
-      ? '<div class="net-latency fail">超时 / 失败</div>'
-      : '<div class="net-latency">'+t.latency+'<span class="unit">ms</span></div>';
+    const color = t.color || '#34c759';
+    const okN = t.success||0, tot = t.total||0;
+    const loss = (t.loss===null || t.loss===undefined) ? (tot>0 ? Math.round((tot-okN)/tot*100) : 100) : t.loss;
+    const cls = loss>50 ? 'bad-state' : (loss>10 ? 'warn-state' : '');
+    let statusHtml;
+    if (t.latency===null || t.latency===undefined){
+      statusHtml = '<div class="net-status-line"><span class="net-pulse fail"></span><div class="net-latency fail">超时 / 失败</div></div>';
+    } else if (t.latency>=1500){
+      statusHtml = '<div class="net-status-line"><span class="net-pulse slow"></span><div class="net-latency">'+t.latency+'<span class="unit">ms</span></div></div>';
+    } else {
+      statusHtml = '<div class="net-status-line"><span class="net-pulse good"></span><div class="net-latency">'+t.latency+'<span class="unit">ms</span></div></div>';
+    }
+    const minV = (t.min===null || t.min===undefined) ? '—' : t.min;
+    const maxV = (t.max===null || t.max===undefined) ? '—' : t.max;
     const dots = (t.samples||[]).map(s=>dotCls(s)).join('');
-    return '<div class="net-card"><div class="net-head"><span class="net-icon">'+esc(t.icon||'')+'</span><span class="net-name">'+esc(t.name||t.host||'')+'</span>'+region+'</div>'+lat+'<div class="net-dots">'+dots+'</div><div class="net-foot"><span>'+(t.success||0)+'/'+(t.total||0)+' 成功</span><span class="mono">'+esc(t.host||'')+'</span></div></div>';
+    return '<div class="net-card '+cls+'" style="--nc:'+color+'"><div class="net-head"><span class="net-logo" style="background:'+color+'">'+esc(t.icon||'')+'</span><span class="net-name">'+esc(t.name||t.host||'')+'</span>'+region+'</div>'+statusHtml+'<div class="net-meta"><span>丢包 <b>'+loss+'%</b></span><span>min <b>'+minV+'</b></span><span>max <b>'+maxV+'</b></span></div><div class="net-dots">'+dots+'</div><div class="net-foot"><span>'+(t.success||0)+'/'+(t.total||0)+' 成功</span><span class="mono">'+esc(t.host||'')+'</span></div></div>';
   }).join('');
 }
 function dotCls(ms){
@@ -486,7 +660,7 @@ async function testProxyIp(){
 }
 async function testUdp(){
   const el = $('#testResult'); if (!el) return;
-  el.innerHTML = 'UDP 测试中…（经 UDP 出站向 1.1.1.1:53 发起 DNS 查询）';
+  el.innerHTML = 'UDP 测试中…（经 UDP 出站向 8.8.8.8:53 发起 DNS 查询）';
   try {
     const r = await api('/admin/api/test/udp',{method:'POST',body:'{}'});
     el.innerHTML = r.ok

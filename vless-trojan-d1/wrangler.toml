@@ -5,6 +5,17 @@ compatibility_date = "2024-11-01"
 [triggers]
 crons = ["0 3 * * *"]
 
+# geo 更新队列：手动/定时更新入队，由 consumer 独立执行（不受请求 30s 限制，失败自动重试）
+[[queues.producers]]
+binding = "GEO_QUEUE"
+queue = "cf-vless-trojan-d1-geo-update"
+
+[[queues.consumers]]
+queue = "cf-vless-trojan-d1-geo-update"
+max_batch_size = 1
+max_retries = 2
+dead_letter_queue = "cf-vless-trojan-d1-geo-update-dlq"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "cf-vless-trojan-d1"

@@ -38,6 +38,8 @@ export function buildVlessLink(p) {
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+	} else if (transport === 'h2') {
+		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
 		params.set('path', with0rtt(p.wsPath));
 	}
@@ -61,6 +63,8 @@ export function buildTrojanLink(p) {
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+	} else if (transport === 'h2') {
+		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
 		params.set('path', with0rtt(p.wsPath));
 	}
@@ -146,7 +150,7 @@ export function buildClashSubscription(config, p) {
 		if (transport === 'grpc') {
 			pr['grpc-opts'] = { 'grpc-service-name': `/${serviceNameOf(wsPath)}` };
 		} else if (transport === 'h2') {
-			pr['h2-opts'] = { path: with0rtt(wsPath), host: [wsHost] };
+			pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
 		} else {
 			pr['ws-opts'] = { path: with0rtt(wsPath), headers: { Host: wsHost } };
 		}
@@ -211,7 +215,7 @@ export function buildSingBoxSubscription(config, p) {
 			return { type: 'grpc', service_name: `/${serviceNameOf(wsPath)}` };
 		}
 		if (transport === 'h2') {
-			return { type: 'http', host: [wsHost], path: with0rtt(wsPath) };
+			return { type: 'http', host: [wsHost], path: wsPath.startsWith('/') ? wsPath : `/${wsPath}` };
 		}
 		return { type: 'ws', path: with0rtt(wsPath), headers: { Host: wsHost } };
 	};

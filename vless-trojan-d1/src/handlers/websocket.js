@@ -1,18 +1,59 @@
 /**
  * WebSocket inbound handler: VLESS / Trojan protocol dispatch
  * 仅负责 WebSocket 升级与 ws 消息 ↔ 字节流适配，代理核心逻辑在 proxy-session.js
+ *
+ * WS early data（0-RTT）支持：
+ * - xray 客户端在 VLESS 链接带 ?ed=2560 时，会把首个数据包 base64 编码后放入
+ *   Sec-WebSocket-Protocol 头；CF Workers 平台无法读取 Upgrade request body，
+ *   因此采用与 EDtunnel 相同的 Sec-WebSocket-Protocol base64 通道。
+ * - 解析出的 early data 在 server.accept() 同步返回后、processProxySession 启动前
+ *   注入读取队列，作为首包参与 VLESS/Trojan 协议解析，消除"客户端首包在头里、
+ *   服务端只等 ws message 帧"的双向死锁。
  */
 
 import { processProxySession } from './proxy-session.js';
-import { safeCloseWebSocket } from '../outbound/stream.js';
+import { safeCloseWebSocket, base64ToArrayBuffer } from '../outbound/stream.js';
 
 /**
- * 将 ws 消息统一归一化为 Uint8Array（支持 ArrayBuffer / 视图 / 文本帧）
+ * 将 ws 消息统一归一化为 Uint8Array（支持 ArrayBuffer / 视图 / 文本帧 / 跨 realm ArrayBuffer）
+ * Blob 需异步转换，由调用方先 await arrayBuffer() 再传入。
  */
 function normalizeToUint8Array(data) {
 	if (data instanceof ArrayBuffer) return new Uint8Array(data);
 	if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 	if (typeof data === 'string') return new TextEncoder().encode(data);
+	// 跨 realm ArrayBuffer：平台内部构造的 ArrayBuffer 可能不满足 instanceof
+	if (Object.prototype.toString.call(data) === '[object ArrayBuffer]') return new Uint8Array(data);
+	return null;
+}
+
+/**
+ * 提取 WS early data：
+ * 1) 解析 URL ?ed= 参数（xray 宣告的 early data 上限，用于日志/校验）；
+ * 2) 从 Sec-WebSocket-Protocol 头提取 base64 数据（兼容 "base64," 前缀），
+ *    这是 xray ed=2560 场景下 early data 的实际传输通道。
+ * @param {Request} request
+ * @param {Function} log
+ * @returns {Uint8Array|null}
+ */
+function extractEarlyData(request, log) {
+	const edParam = new URL(request.url).searchParams.get('ed');
+	let header = request.headers.get('sec-websocket-protocol') || '';
+	if (header) {
+		if (header.startsWith('base64,')) header = header.slice(7);
+		const { earlyData, error } = base64ToArrayBuffer(header);
+		if (error) {
+			log(`early data decode error: ${error.message || error}`);
+			return null;
+		}
+		if (earlyData && earlyData.byteLength > 0) {
+			log(`early data injected: ${earlyData.byteLength} B (ed=${edParam || 'n/a'})`);
+			return new Uint8Array(earlyData);
+		}
+	}
+	if (edParam) {
+		log(`ed=${edParam} declared but no sec-websocket-protocol payload`);
+	}
 	return null;
 }
 
@@ -28,7 +69,9 @@ export async function handleWebSocketUpgrade(request, config, env) {
 	server.accept();
 
 	const log = (...args) => console.log('[ws]', ...args);
-	processProxySession(config, env, log, createWsIO(server, log)).catch((e) => {
+	// accept() 同步返回后、processProxySession 启动前注入 early data（若有）
+	const earlyData = extractEarlyData(request, log);
+	processProxySession(config, env, log, createWsIO(server, log, earlyData)).catch((e) => {
 		log(`ws handler error: ${e.message || e}`);
 		safeCloseWebSocket(server);
 	});
@@ -38,18 +81,41 @@ export async function handleWebSocketUpgrade(request, config, env) {
 
 /**
  * 将 WebSocket 适配为 io 接口（读=ws 消息，写=ws.send，关=safeClose）
+ * @param {WebSocket} ws
+ * @param {Function} log
+ * @param {Uint8Array|null} earlyData 首个数据块（early data），先于 ws message 入队
  */
-function createWsIO(ws, log) {
+function createWsIO(ws, log, earlyData = null) {
 	const queue = [];
 	const waiters = [];
 	let eof = false;
 
-	const onMessage = (event) => {
-		const data = normalizeToUint8Array(event.data);
-		if (!data || data.byteLength === 0) return;
+	if (earlyData && earlyData.byteLength > 0) {
+		queue.push(earlyData);
+	} else {
+		// 非 0-RTT：首包必须来自 message 事件。设 6s 兜底，避免平台丢帧/客户端不发导致永久挂起（hung）
+		setTimeout(() => {
+			if (!eof && queue.length === 0 && waiters.length > 0) {
+				log('first packet timeout: no ws message within 6s');
+				safeCloseWebSocket(ws);
+			}
+		}, 6000);
+	}
+
+	const onMessage = async (event) => {
+		// Blob 帧需先异步转 ArrayBuffer
+		let data = event.data;
+		if (typeof Blob !== 'undefined' && data instanceof Blob) {
+			data = await data.arrayBuffer();
+		}
+		const bytes = normalizeToUint8Array(data);
+		if (!bytes || bytes.byteLength === 0) {
+			log(`message dropped: type=${Object.prototype.toString.call(event.data)} len=${data && data.byteLength != null ? data.byteLength : data && data.length != null ? data.length : 'n/a'}`);
+			return;
+		}
 		const waiter = waiters.shift();
-		if (waiter) waiter(data);
-		else queue.push(data);
+		if (waiter) waiter(bytes);
+		else queue.push(bytes);
 	};
 	const onClose = () => {
 		if (eof) return;

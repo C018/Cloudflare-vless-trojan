@@ -15,7 +15,7 @@ import { createRequestConfig } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
 import { handleH2Inbound, handleGrpcInbound } from './handlers/entry.js';
 import { handleHttp } from './handlers/http.js';
-import { handleAdminApi } from './admin/api.js';
+import { handleAdminApi, runGeoUpdateTask } from './admin/api.js';
 import { buildAdminUI } from './admin/ui.js';
 import { handleCron, scheduled } from './cron.js';
 
@@ -55,7 +55,7 @@ export default {
 			if (path.startsWith('/admin')) {
 				const config = await createRequestConfig(request, env, { ensureAdmin: true });
 				if (path.startsWith('/admin/api/')) {
-					return await handleAdminApi(request, config);
+					return await handleAdminApi(request, config, ctx);
 				}
 				// /admin /admin/ 及 /admin 下其它路径 → 后台 UI（首次部署附带初始密码提示）
 				return new Response(buildAdminUI(config.adminTempPassword), {
@@ -104,5 +104,27 @@ export default {
 	 */
 	async scheduled(event, env, ctx) {
 		return scheduled(event, env, ctx);
+	},
+
+	/**
+	 * Queue consumer：geo 更新队列（手动/定时触发入队后在此独立执行）
+	 * - 独立执行窗口（默认最长 15 分钟），不受请求 30s wall-time 限制
+	 * - 失败由队列自动重试（max_retries=2），耗尽后进死信队列
+	 * - 完成/失败统一清理 geo:updating 锁并写进度，前端轮询 geo/status 展示
+	 * @param {import('@cloudflare/workers-types').MessageBatch} batch
+	 */
+	async queue(batch, env, ctx) {
+		for (const msg of batch.messages) {
+			try {
+				// runGeoUpdateTask 内部会写分阶段进度到 geo:update_status 并清理 geo:updating 锁
+				const detail = await runGeoUpdateTask(env.DB, env.GEO_KV);
+				console.log(`[queue] geo update done: ${detail.updated}/${detail.total} categories${detail.failed.length ? ', failed: ' + detail.failed.join('; ') : ''}`);
+				msg.ack();
+			} catch (e) {
+				console.log(`[queue] geo update failed (will retry): ${e.message || e}`);
+				// 抛错 → 队列按 max_retries 重试；重试耗尽自动进死信队列
+				throw e;
+			}
+		}
 	}
 };
