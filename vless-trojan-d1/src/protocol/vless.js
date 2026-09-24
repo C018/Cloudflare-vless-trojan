@@ -21,7 +21,10 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 	if (protocolBuffer.byteLength < 24) {
 		return { hasError: true, message: 'invalid data' };
 	}
-	const dataView = new DataView(protocolBuffer);
+	// createWsIO 归一化为 Uint8Array，需取其底层 buffer 构造 DataView
+	const dataView = protocolBuffer instanceof Uint8Array
+		? new DataView(protocolBuffer.buffer, protocolBuffer.byteOffset, protocolBuffer.byteLength)
+		: new DataView(protocolBuffer);
 	const version = dataView.getUint8(0);
 	const uuid = bytesToUuid(new Uint8Array(protocolBuffer.slice(1, 17)));
 

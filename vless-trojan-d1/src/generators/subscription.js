@@ -1,5 +1,6 @@
 /**
  * Generators: single node links, subscription output (plain / clash / sing-box)
+ * 入站传输模式（config.entryTransport: ws / grpc / h2）决定链接/配置的 network 与 path/serviceName。
  */
 
 // 0-RTT 参数（?ed=2560）与默认 TLS 指纹（random）
@@ -15,22 +16,31 @@ export function with0rtt(wsPath) {
 	return `${clean}?${ED_PARAM}`;
 }
 
+/** 取 serviceName（grpc 用）：wsPath 去首尾斜杠，如 /ws -> ws */
+function serviceNameOf(wsPath) {
+	return (wsPath.startsWith('/') ? wsPath : `/${wsPath}`).replace(/\/+$/, '').replace(/^\//, '');
+}
+
 /**
  * 生成 vless 节点链接
- * @param {Object} p {uuid, host, port, wsPath, tls, remark, wsHost, sni, fp}
+ * @param {Object} p {uuid, host, port, wsPath, tls, remark, wsHost, sni, fp, transport}
  *  host 为连接地址（入口 IP/域名 或当前域名）；wsHost 为 WebSocket Host 头；sni 为 TLS SNI
  */
 export function buildVlessLink(p) {
-	const wsPath = with0rtt(p.wsPath);
+	const transport = p.transport || 'ws';
 	const wsHost = p.wsHost || p.host;
 	const sni = p.sni || (p.tls ? wsHost : '');
 	const params = new URLSearchParams({
 		encryption: 'none',
-		type: 'ws',
-		path: wsPath,
+		type: transport,
 		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
 	});
+	if (transport === 'grpc') {
+		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+	} else {
+		params.set('path', with0rtt(p.wsPath));
+	}
 	if (p.tls && sni) params.set('sni', sni);
 	if (p.tls) params.set('fp', p.fp || DEFAULT_FINGERPRINT);
 	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
@@ -41,15 +51,19 @@ export function buildVlessLink(p) {
  * 生成 trojan 节点链接
  */
 export function buildTrojanLink(p) {
-	const wsPath = with0rtt(p.wsPath);
+	const transport = p.transport || 'ws';
 	const wsHost = p.wsHost || p.host;
 	const sni = p.sni || (p.tls ? wsHost : '');
 	const params = new URLSearchParams({
-		type: 'ws',
-		path: wsPath,
+		type: transport,
 		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
 	});
+	if (transport === 'grpc') {
+		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+	} else {
+		params.set('path', with0rtt(p.wsPath));
+	}
 	if (p.tls && sni) params.set('sni', sni);
 	if (p.tls) params.set('fp', p.fp || DEFAULT_FINGERPRINT);
 	const remark = encodeURIComponent(p.remark || `${p.host}:${p.port}`);
@@ -67,17 +81,27 @@ export function resolveHost(request) {
 
 /**
  * 构建聚合节点列表（vless 多 uuid + trojan 多密码）
+ * 入站已支持全类型自动（ws/grpc/h2），每个用户输出三种传输节点；
+ * 每个用户优先使用其自定义入站路径（u.path），未设置时回退全局 config.wsPath。
  * @param {Object} config
  * @param {Object} p {host, port, tls, wsHost, sni}
  */
+export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2'];
+
 export function buildNodeLinks(config, p) {
 	const links = [];
 	const port = p.port || (p.tls ? 443 : 80);
 	for (const u of config.vlessUsers) {
-		links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath: config.wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: `vless-${u.remark || u.uuid.slice(0, 8)}` }));
+		const wsPath = u.path || config.wsPath;
+		for (const transport of INBOUND_TRANSPORTS) {
+			links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}` }));
+		}
 	}
 	for (const u of config.trojanUsers) {
-		links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath: config.wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: `trojan-${u.remark || u.password.slice(0, 8)}` }));
+		const wsPath = u.path || config.wsPath;
+		for (const transport of INBOUND_TRANSPORTS) {
+			links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `trojan-${u.remark || u.password.slice(0, 8)}-${transport}` }));
+		}
 	}
 	return links;
 }
@@ -102,37 +126,43 @@ export function buildBase64Subscription(config, p) {
 export function buildClashSubscription(config, p) {
 	const port = p.port || 443;
 	const tls = p.tls !== false;
-	const wsPath = with0rtt(config.wsPath);
 	const wsHost = p.wsHost || p.host;
 	const sni = p.sni || (tls ? wsHost : '');
 	const proxies = [];
-	const vlessProxies = config.vlessUsers.map((u, i) => ({
-		name: `vless-${u.remark || i + 1}`,
-		type: 'vless',
-		server: p.host,
-		port,
-		uuid: u.uuid,
-		network: 'ws',
-		tls,
-		'servername': sni || undefined,
-		'client-fingerprint': tls ? DEFAULT_FINGERPRINT : undefined,
-		'ws-opts': { path: wsPath, headers: { Host: wsHost } },
-		udp: true
-	}));
-	const trojanProxies = config.trojanUsers.map((u, i) => ({
-		name: `trojan-${u.remark || i + 1}`,
-		type: 'trojan',
-		server: p.host,
-		port,
-		password: u.password,
-		network: 'ws',
-		tls,
-		'servername': sni || undefined,
-		'client-fingerprint': tls ? DEFAULT_FINGERPRINT : undefined,
-		'ws-opts': { path: wsPath, headers: { Host: wsHost } },
-		udp: true
-	}));
-	proxies.push(...vlessProxies, ...trojanProxies);
+
+	const clashProxy = (name, type, credKey, cred, wsPath, transport) => {
+		const pr = {
+			name,
+			type,
+			server: p.host,
+			port,
+			[credKey]: cred,
+			network: transport,
+			tls,
+			'servername': sni || undefined,
+			'client-fingerprint': tls ? DEFAULT_FINGERPRINT : undefined,
+			udp: true
+		};
+		if (transport === 'grpc') {
+			pr['grpc-opts'] = { 'grpc-service-name': `/${serviceNameOf(wsPath)}` };
+		} else if (transport === 'h2') {
+			pr['h2-opts'] = { path: with0rtt(wsPath), host: [wsHost] };
+		} else {
+			pr['ws-opts'] = { path: with0rtt(wsPath), headers: { Host: wsHost } };
+		}
+		return pr;
+	};
+
+	config.vlessUsers.forEach((u, i) => {
+		for (const transport of INBOUND_TRANSPORTS) {
+			proxies.push(clashProxy(`vless-${u.remark || i + 1}-${transport}`, 'vless', 'uuid', u.uuid, u.path || config.wsPath, transport));
+		}
+	});
+	config.trojanUsers.forEach((u, i) => {
+		for (const transport of INBOUND_TRANSPORTS) {
+			proxies.push(clashProxy(`trojan-${u.remark || i + 1}-${transport}`, 'trojan', 'password', u.password, u.path || config.wsPath, transport));
+		}
+	});
 
 	const lines = ['proxies:'];
 	for (const pr of proxies) {
@@ -142,15 +172,25 @@ export function buildClashSubscription(config, p) {
 		lines.push(`    port: ${pr.port}`);
 		if (pr.uuid) lines.push(`    uuid: ${pr.uuid}`);
 		if (pr.password) lines.push(`    password: "${pr.password}"`);
-		lines.push(`    network: ws`);
+		lines.push(`    network: ${pr.network}`);
 		lines.push(`    tls: ${pr.tls}`);
 		if (pr['servername']) lines.push(`    servername: ${pr['servername']}`);
 		if (pr['client-fingerprint']) lines.push(`    client-fingerprint: ${pr['client-fingerprint']}`);
 		lines.push(`    udp: true`);
-		lines.push(`    ws-opts:`);
-		lines.push(`      path: ${pr['ws-opts'].path}`);
-		lines.push(`      headers:`);
-		lines.push(`        Host: ${wsHost}`);
+		if (pr.network === 'grpc') {
+			lines.push(`    grpc-opts:`);
+			lines.push(`      grpc-service-name: ${pr['grpc-opts']['grpc-service-name']}`);
+		} else if (pr.network === 'h2') {
+			lines.push(`    h2-opts:`);
+			lines.push(`      path: ${pr['h2-opts'].path}`);
+			lines.push(`      host:`);
+			lines.push(`        - ${wsHost}`);
+		} else {
+			lines.push(`    ws-opts:`);
+			lines.push(`      path: ${pr['ws-opts'].path}`);
+			lines.push(`      headers:`);
+			lines.push(`        Host: ${wsHost}`);
+		}
 	}
 	lines.push('');
 	lines.push('rules:');
@@ -163,31 +203,43 @@ export function buildClashSubscription(config, p) {
  */
 export function buildSingBoxSubscription(config, p) {
 	const port = p.port || 443;
-	const wsPath = with0rtt(config.wsPath);
 	const wsHost = p.wsHost || p.host;
 	const sni = p.sni || (p.tls ? wsHost : '');
 	const outbounds = [];
+	const transportOf = (wsPath, transport) => {
+		if (transport === 'grpc') {
+			return { type: 'grpc', service_name: `/${serviceNameOf(wsPath)}` };
+		}
+		if (transport === 'h2') {
+			return { type: 'http', host: [wsHost], path: with0rtt(wsPath) };
+		}
+		return { type: 'ws', path: with0rtt(wsPath), headers: { Host: wsHost } };
+	};
 	for (const u of config.vlessUsers) {
-		outbounds.push({
-			type: 'vless',
-			tag: `vless-${u.remark || u.uuid.slice(0, 8)}`,
-			server: p.host,
-			server_port: port,
-			uuid: u.uuid,
-			transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
-			tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
-		});
+		for (const transport of INBOUND_TRANSPORTS) {
+			outbounds.push({
+				type: 'vless',
+				tag: `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}`,
+				server: p.host,
+				server_port: port,
+				uuid: u.uuid,
+				transport: transportOf(u.path || config.wsPath, transport),
+				tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
+			});
+		}
 	}
 	for (const u of config.trojanUsers) {
-		outbounds.push({
-			type: 'trojan',
-			tag: `trojan-${u.remark || u.password.slice(0, 8)}`,
-			server: p.host,
-			server_port: port,
-			password: u.password,
-			transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
-			tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
-		});
+		for (const transport of INBOUND_TRANSPORTS) {
+			outbounds.push({
+				type: 'trojan',
+				tag: `trojan-${u.remark || u.password.slice(0, 8)}-${transport}`,
+				server: p.host,
+				server_port: port,
+				password: u.password,
+				transport: transportOf(u.path || config.wsPath, transport),
+				tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
+			});
+		}
 	}
 	return JSON.stringify({ outbounds, log: { level: 'info' } }, null, 2);
 }

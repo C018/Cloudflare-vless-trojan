@@ -69,6 +69,9 @@ export async function handleAdminApi(request, config) {
 		});
 	}
 
+	// 旧库自动迁移：vless_users / trojan_users 补充入站路径、到期、流量限制等列（幂等）
+	await ensureUserColumns(DB);
+
 	// ---- settings ----
 	if (resource === 'settings') {
 		if (method === 'GET') {
@@ -78,7 +81,8 @@ export async function handleAdminApi(request, config) {
 		if (method === 'PUT') {
 			const body = await readBody(request);
 			if (!body) return json({ error: 'bad body' }, 400);
-			// 白名单：仅允许写入受支持的设置项，屏蔽已废弃的 CDN/优选 等字段
+			// 白名单：仅允许写入受支持的设置项，屏蔽已废弃的 CDN/优选/entry_transport 等字段。
+			// 入站已改为全类型自动（ws/grpc/h2），entry_transport 不再参与入站分发，禁止再写入。
 			const ALLOWED_SETTINGS = new Set([
 				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound',
 				'disguise_title', 'disguise_subtitle',
@@ -99,8 +103,8 @@ export async function handleAdminApi(request, config) {
 
 	// ---- 通用 CRUD（表名映射 + 白名单校验）----
 	const crudTables = {
-		'vless-users': { table: 'vless_users', cols: ['uuid', 'remark', 'enable'] },
-		'trojan-users': { table: 'trojan_users', cols: ['password', 'remark', 'enable'] },
+		'vless-users': { table: 'vless_users', cols: ['uuid', 'remark', 'enable', 'path', 'expire_at', 'traffic_limit', 'traffic_reset_at'] },
+		'trojan-users': { table: 'trojan_users', cols: ['password', 'remark', 'enable', 'path', 'expire_at', 'traffic_limit', 'traffic_reset_at'] },
 		'outbounds': {
 			table: 'outbounds',
 			cols: ['type', 'name', 'address', 'port', 'uuid', 'path', 'tls', 'udp', 'enable', 'sort', 'username', 'password', 'sni', 'transport'],
@@ -110,7 +114,7 @@ export async function handleAdminApi(request, config) {
 				if ((body.type === 'socks5' || body.type === 'http') && !body.address) return 'address required';
 				if (body.type === 'vless') {
 					if (!body.uuid) return 'vless requires uuid';
-					if (body.transport !== undefined && !['raw', 'ws', 'grpc', 'httpupgrade'].includes(body.transport)) return 'invalid vless transport';
+					if (body.transport !== undefined && !['raw', 'ws', 'grpc', 'httpupgrade', 'h2'].includes(body.transport)) return 'invalid vless transport';
 				}
 				if ((body.username && !body.password) || (!body.username && body.password)) return 'username and password must be set together';
 				// socks5/http 不支持 UDP（仅 vless 支持），保存时强制 udp=0
@@ -130,17 +134,31 @@ export async function handleAdminApi(request, config) {
 	// ---- stats ----
 	if (resource === 'stats' && method === 'GET') {
 		const [vless, trojan] = await Promise.all([
-			DB.prepare('SELECT remark, uuid, up, down FROM vless_users ORDER BY (up + down) DESC').all(),
-			DB.prepare('SELECT remark, password, up, down FROM trojan_users ORDER BY (up + down) DESC').all(),
+			DB.prepare('SELECT remark, uuid, up, down, path, expire_at, traffic_limit, traffic_reset_at FROM vless_users ORDER BY (up + down) DESC').all(),
+			DB.prepare('SELECT remark, password, up, down, path, expire_at, traffic_limit, traffic_reset_at FROM trojan_users ORDER BY (up + down) DESC').all(),
 		]);
-		return json({ vless: vless.results || [], trojan: trojan.results || [] });
+		const now = Math.floor(Date.now() / 1000);
+		const decorate = (rows) => (rows || []).map((r) => {
+			const up = Number(r.up || 0);
+			const down = Number(r.down || 0);
+			const limit = Number(r.traffic_limit || 0);
+			const used = up + down;
+			return {
+				...r,
+				used,
+				remaining: limit > 0 ? Math.max(0, limit - used) : null,
+				expired: r.expire_at > 0 && r.expire_at < now,
+				limitReached: limit > 0 && used >= limit,
+			};
+		});
+		return json({ vless: decorate(vless.results), trojan: decorate(trojan.results) });
 	}
 
 	// ---- geo update ----
 	if (resource === 'geo' && segments[3] === 'update' && method === 'POST') {
 		try {
-			const count = await updateGeo(DB, GEO_KV);
-			return json({ ok: true, updated: count });
+			const detail = await updateGeo(DB, GEO_KV);
+			return json({ ok: true, updated: detail.updated, total: detail.total, failed: detail.failed });
 		} catch (e) {
 			return json({ error: e.message }, 500);
 		}
@@ -185,6 +203,18 @@ export async function handleAdminApi(request, config) {
 	return json({ error: 'not found' }, 404);
 }
 
+async function ensureOutboundTransportColumn(DB) {
+	// 老库缺少 transport 列时自动 ALTER，避免保存出站代理报 no such column（幂等，重复执行忽略）
+	try {
+		const { results } = await DB.prepare("SELECT name FROM pragma_table_info('outbounds')").all();
+		if ((results || []).some((r) => r.name === 'transport')) return;
+		await DB.prepare("ALTER TABLE outbounds ADD COLUMN transport TEXT DEFAULT 'ws'").run();
+		console.log('[admin] outbounds.transport column added (migration)');
+	} catch (e) {
+		console.log('[admin] outbounds transport migration skipped: ' + e.message);
+	}
+}
+
 async function handleCrud(method, id, crud, DB, request) {
 	const { table, cols } = crud;
 	const idCol = table === 'vless_users' || table === 'trojan_users' ? 'id' : 'id';
@@ -197,6 +227,7 @@ async function handleCrud(method, id, crud, DB, request) {
 		const body = await readBody(request);
 		if (!body) return json({ error: 'bad body' }, 400);
 		if (crud.validate) { const err = crud.validate(body); if (err) return json({ error: err }, 400); }
+		if (table === 'outbounds') await ensureOutboundTransportColumn(DB);
 		const keys = cols.filter((c) => body[c] !== undefined);
 		if (keys.length === 0) return json({ error: 'no fields' }, 400);
 		const placeholders = keys.map(() => '?').join(',');
@@ -210,6 +241,7 @@ async function handleCrud(method, id, crud, DB, request) {
 		const body = await readBody(request);
 		if (!body) return json({ error: 'bad body' }, 400);
 		if (crud.validate) { const err = crud.validate(body); if (err) return json({ error: err }, 400); }
+		if (table === 'outbounds') await ensureOutboundTransportColumn(DB);
 		const keys = cols.filter((c) => body[c] !== undefined);
 		if (keys.length === 0) return json({ error: 'no fields' }, 400);
 		const sets = keys.map((c) => `${c} = ?`).join(',');
@@ -226,6 +258,7 @@ async function handleCrud(method, id, crud, DB, request) {
 
 /**
  * 手动触发 geo 库更新：读取所有规则引用的分类，写 KV
+ * @returns {Promise<{updated:number, total:number, failed:string[]}>}
  */
 export async function updateGeo(DB, GEO_KV) {
 	const { results } = await DB.prepare('SELECT rule FROM routing_rules').all();
@@ -238,51 +271,105 @@ export async function updateGeo(DB, GEO_KV) {
 		if (m) m[1].split(',').forEach((x) => categories.geoip.add(x.trim()));
 	}
 
-	let updated = 0;
+	const detail = { updated: 0, total: 0, failed: [] };
 	for (const type of ['geosite', 'geoip']) {
 		for (const category of categories[type]) {
+			detail.total++;
 			try {
 				const data = await fetchCategory(type, category);
 				if (data && data.length > 0) {
 					await GEO_KV.put(`${type}:${category}`, JSON.stringify(data));
-					updated++;
+					detail.updated++;
+				} else {
+					detail.failed.push(`${type}:${category} (empty rules)`);
 				}
-			} catch (e) { /* skip category */ }
+			} catch (e) {
+				detail.failed.push(`${type}:${category} (${e.message || e})`);
+			}
 		}
 	}
 	await GEO_KV.put('geo:version', new Date().toISOString());
 	clearGeoCache();
-	return updated;
+	return detail;
 }
 
 /**
- * 从 MetaCubeX sing-geosite / sing-geoip 仓库拉取分类 JSON
+ * 从 MetaCubeX sing-geosite / sing-geoip 仓库拉取分类 JSON。
+ * 修复：sing-geosite rule-set 文件名为 {category}-geosite.json（原实现统一用 {category}.json 导致 404），
+ * 现按候选 URL 列表依次尝试（raw.githubusercontent 主源 + jsDelivr CDN 兜底）。
  */
 async function fetchCategory(type, category) {
-	const repo = type === 'geosite' ? 'MetaCubeX/sing-geosite' : 'MetaCubeX/sing-geoip';
-	const url = `https://raw.githubusercontent.com/${repo}/rule-set/${category}.json`;
-	const res = await fetch(url, { cf: { cacheTtl: 86400 } });
-	if (!res.ok) {
-		// 兜底：geosite 的 category 也可能不带 -geosite 后缀（sing-geosite 已按裸名）
-		return null;
-	}
-	const text = await res.text();
-	// sing-geosite / sing-geoip rule-set 为 JSON：geosite 收集 rules[].domain 与 rules[].domain_suffix（去前导点）；geoip 收集 rules[].ip_cidr
-	let data;
-	try {
-		data = JSON.parse(text);
-	} catch (e) {
-		return null;
-	}
-	const rules = [];
-	const push = (v) => { if (typeof v === 'string' && v && rules.length < 20000) rules.push(v); };
-	for (const rule of data.rules || []) {
-		if (type === 'geosite') {
-			for (const d of rule.domain || []) push(d);
-			for (const d of rule.domain_suffix || []) push(String(d).replace(/^\.+/, ''));
-		} else {
-			for (const c of rule.ip_cidr || []) push(c);
+	const gh = (repo, file) => `https://raw.githubusercontent.com/${repo}/rule-set/${file}`;
+	const cdn = (repo, file) => `https://cdn.jsdelivr.net/gh/${repo}@rule-set/${file}`;
+	const candidates = type === 'geosite'
+		? [
+			gh('MetaCubeX/sing-geosite', `${category}-geosite.json`),
+			gh('MetaCubeX/sing-geosite', `${category}.json`),
+			cdn('MetaCubeX/sing-geosite', `${category}-geosite.json`),
+		]
+		: [
+			gh('MetaCubeX/sing-geoip', `${category}.json`),
+			gh('MetaCubeX/sing-geoip', `${category}-geoip.json`),
+			cdn('MetaCubeX/sing-geoip', `${category}.json`),
+		];
+
+	let lastErr = null;
+	for (const url of candidates) {
+		try {
+			const res = await fetch(url, { cf: { cacheTtl: 86400 } });
+			if (!res.ok) {
+				lastErr = new Error(`HTTP ${res.status}`);
+				continue;
+			}
+			const text = await res.text();
+			let data;
+			try {
+				data = JSON.parse(text);
+			} catch (e) {
+				lastErr = new Error('invalid json');
+				continue;
+			}
+			const rules = [];
+			const push = (v) => { if (typeof v === 'string' && v && rules.length < 20000) rules.push(v); };
+			for (const rule of data.rules || []) {
+				if (type === 'geosite') {
+					for (const d of rule.domain || []) push(d);
+					for (const d of rule.domain_suffix || []) push(String(d).replace(/^\.+/, ''));
+					for (const d of rule.domain_keyword || []) push(String(d));
+				} else {
+					for (const c of rule.ip_cidr || []) push(c);
+				}
+			}
+			if (rules.length > 0) return rules;
+			lastErr = new Error('empty rules');
+		} catch (e) {
+			lastErr = e;
 		}
 	}
-	return rules;
+	throw lastErr || new Error('fetch failed');
+}
+
+/**
+ * 旧库自动迁移：vless_users / trojan_users 补充入站路径、到期时间、流量限制、流量重置列（幂等）
+ */
+async function ensureUserColumns(DB) {
+	const ADD_COLUMNS = [
+		['path', "TEXT DEFAULT ''"],
+		['expire_at', 'INTEGER DEFAULT 0'],
+		['traffic_limit', 'INTEGER DEFAULT 0'],
+		['traffic_reset_at', 'INTEGER DEFAULT 0'],
+	];
+	for (const table of ['vless_users', 'trojan_users']) {
+		try {
+			const { results } = await DB.prepare(`SELECT name FROM pragma_table_info('${table}')`).all();
+			const names = new Set((results || []).map((r) => r.name));
+			for (const [col, def] of ADD_COLUMNS) {
+				if (names.has(col)) continue;
+				await DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`).run();
+				console.log(`[admin] ${table}.${col} column added (migration)`);
+			}
+		} catch (e) {
+			console.log(`[admin] ${table} migration skipped: ${e.message}`);
+		}
+	}
 }

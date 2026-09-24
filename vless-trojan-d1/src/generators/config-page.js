@@ -1,28 +1,44 @@
 /**
  * Single-node config page generator
+ * 入站已支持全类型自动（ws/grpc/h2 共享同一入站路径），页面展示三种传输的节点链接。
  */
 
 import { buildVlessLink, buildTrojanLink } from './subscription.js';
 
 /**
- * /{uuid|password} 页面：展示该凭据对应的节点链接
+ * /{uuid|password} 页面：展示该凭据对应的节点链接（ws / grpc / h2）
  * @param {Object} config
- * @param {Object} p {host, port, tls, wsHost, sni, credential, kind}
+ * @param {Object} p {host, port, tls, wsHost, sni, credential, kind, path}
  */
 export function buildConfigPage(config, p) {
 	const host = p.host;
 	const port = p.port || (p.tls ? 443 : 80);
-	const wsPath = config.wsPath.startsWith('/') ? config.wsPath : `/${config.wsPath}`;
+	const wsPath = (p.path || config.wsPath || '/ws').replace(/^\//, '');
+	const cleanPath = `/${wsPath}`;
 
-	let link = '';
-	let label = '';
-	if (p.kind === 'vless') {
-		link = buildVlessLink({ uuid: p.credential, host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: 'vless-node' });
-		label = 'VLESS';
-	} else if (p.kind === 'trojan') {
-		link = buildTrojanLink({ password: p.credential, host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, remark: 'trojan-node' });
-		label = 'Trojan';
-	}
+	const base = { host, port, wsPath: cleanPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni };
+	const linkOf = (transport, remark) => {
+		if (p.kind === 'vless') {
+			return buildVlessLink({ ...base, uuid: p.credential, transport, remark: `vless-${remark}` });
+		}
+		return buildTrojanLink({ ...base, password: p.credential, transport, remark: `trojan-${remark}` });
+	};
+
+	const links = [
+		{ name: 'WebSocket (ws)', link: linkOf('ws', 'ws') },
+		{ name: 'gRPC', link: linkOf('grpc', 'grpc') },
+		{ name: 'HTTP/2 (h2)', link: linkOf('h2', 'h2') },
+	];
+
+	const label = p.kind === 'vless' ? 'VLESS' : 'Trojan';
+	const rows = links.map((l, i) => `
+  <div class="row">
+    <label>${l.name}</label>
+    <div class="linkbox">
+      <input type="text" readonly value="${l.link}" id="link${i}">
+      <button onclick="copyLink(${i})">复制</button>
+    </div>
+  </div>`).join('');
 
 	const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -47,17 +63,11 @@ export function buildConfigPage(config, p) {
 <body>
 <div class="card">
   <h1>${label} 节点 <span class="badge">${host}</span></h1>
-  <p class="desc">复制下方链接到 v2rayN / sing-box / Clash 客户端导入节点</p>
-  <div class="row">
-    <label>节点分享链接</label>
-    <div class="linkbox">
-      <input type="text" readonly value="${link}" id="link">
-      <button onclick="copyLink()">复制</button>
-    </div>
-  </div>
+  <p class="desc">入站路径：<b>${cleanPath}</b>（服务端已自动兼容 ws / grpc / h2，复制任一链接导入客户端）</p>
+  ${rows}
 </div>
 <script>
-function copyLink(){ const el=document.getElementById('link'); el.select(); document.execCommand('copy'); el.style.borderColor='#34c759'; setTimeout(()=>el.style.borderColor='#d2d2d7',800); }
+function copyLink(i){ const el=document.getElementById('link'+i); el.select(); document.execCommand('copy'); el.style.borderColor='#34c759'; setTimeout(()=>el.style.borderColor='#d2d2d7',800); }
 </script>
 </body>
 </html>`;

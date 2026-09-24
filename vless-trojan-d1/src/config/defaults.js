@@ -2,7 +2,7 @@
  * Defaults + request-scoped config loader (D1 backed)
  */
 
-import { DEFAULT_WS_PATH, OUTBOUND_DIRECT } from './constants.js';
+import { DEFAULT_WS_PATH, OUTBOUND_DIRECT, INBOUND_TRANSPORT_DEFAULT } from './constants.js';
 import { hashPassword } from '../admin/auth.js';
 
 /**
@@ -23,16 +23,24 @@ export async function loadSettings(db) {
 
 /**
  * 读取启用的 vless 用户
- * @returns {Promise<Array<{id:number,uuid:string,remark:string,up:number,down:number}>>}
+ * @returns {Promise<Array<{id:number,uuid:string,remark:string,up:number,down:number,path:string,expire_at:number,traffic_limit:number,traffic_reset_at:number}>>}
  */
 export async function loadVlessUsers(db) {
 	try {
 		const { results } = await db.prepare(
-			'SELECT id, uuid, remark, up, down FROM vless_users WHERE enable = 1 ORDER BY id'
+			'SELECT id, uuid, remark, up, down, path, expire_at, traffic_limit, traffic_reset_at FROM vless_users WHERE enable = 1 ORDER BY id'
 		).all();
 		return results || [];
 	} catch (e) {
-		return [];
+		// 旧库缺少新列：回退旧查询（后台 API 会自动迁移补列），保证入站不中断
+		try {
+			const { results } = await db.prepare(
+				'SELECT id, uuid, remark, up, down FROM vless_users WHERE enable = 1 ORDER BY id'
+			).all();
+			return (results || []).map((u) => ({ path: '', expire_at: 0, traffic_limit: 0, traffic_reset_at: 0, ...u }));
+		} catch (e2) {
+			return [];
+		}
 	}
 }
 
@@ -42,12 +50,72 @@ export async function loadVlessUsers(db) {
 export async function loadTrojanUsers(db) {
 	try {
 		const { results } = await db.prepare(
-			'SELECT id, password, remark, up, down FROM trojan_users WHERE enable = 1 ORDER BY id'
+			'SELECT id, password, remark, up, down, path, expire_at, traffic_limit, traffic_reset_at FROM trojan_users WHERE enable = 1 ORDER BY id'
 		).all();
 		return results || [];
 	} catch (e) {
-		return [];
+		try {
+			const { results } = await db.prepare(
+				'SELECT id, password, remark, up, down FROM trojan_users WHERE enable = 1 ORDER BY id'
+			).all();
+			return (results || []).map((u) => ({ path: '', expire_at: 0, traffic_limit: 0, traffic_reset_at: 0, ...u }));
+		} catch (e2) {
+			return [];
+		}
 	}
+}
+
+/** 规范化入站路径：确保以 / 开头、去尾部斜杠 */
+export function normalizeInboundPath(p) {
+	let s = String(p || '').trim();
+	if (!s) return '';
+	if (!s.startsWith('/')) s = '/' + s;
+	while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+	return s;
+}
+
+/**
+ * 到期流量重置：traffic_reset_at 到期的用户清零 up/down 并清空重置时间（一次性重置）
+ * @returns {Promise<void>}
+ */
+async function resetExpiredTraffic(DB, users, table) {
+	const now = Math.floor(Date.now() / 1000);
+	for (const u of users) {
+		if (u.traffic_reset_at > 0 && u.traffic_reset_at <= now) {
+			try {
+				await DB.prepare(`UPDATE ${table} SET up = 0, down = 0, traffic_reset_at = 0 WHERE id = ?`).bind(u.id).run();
+				u.up = 0;
+				u.down = 0;
+				u.traffic_reset_at = 0;
+			} catch (e) { /* ignore */ }
+		}
+	}
+}
+
+/**
+ * 构建入站路径 → 允许的凭据作用域映射。
+ * 每个路径同时注册 {path}（ws/h2）与 {path}/Tun（grpc）。
+ * 全局路径作用域为 all；用户自定义路径作用域限定为该用户凭据。
+ * @param {string} wsPath 全局入站路径
+ * @param {Array} vlessUsers
+ * @param {Array} trojanUsers
+ * @returns {Map<string, Array<{kind:string, credential?:string}>>}
+ */
+export function buildInboundPathMap(wsPath, vlessUsers, trojanUsers) {
+	const map = new Map();
+	const register = (rawPath, scope) => {
+		const p = normalizeInboundPath(rawPath);
+		if (!p) return;
+		if (!map.has(p)) map.set(p, []);
+		map.get(p).push(scope);
+		const tun = `${p}/Tun`;
+		if (!map.has(tun)) map.set(tun, []);
+		map.get(tun).push(scope);
+	};
+	register(wsPath, { kind: 'all' });
+	for (const u of vlessUsers) if (u.path) register(u.path, { kind: 'vless', credential: u.uuid.toLowerCase() });
+	for (const u of trojanUsers) if (u.path) register(u.path, { kind: 'trojan', credential: u.password });
+	return map;
 }
 
 /**
@@ -109,6 +177,7 @@ export async function createRequestConfig(request, env, options = {}) {
 	const settings = await loadSettings(DB);
 
 	const wsPath = settings.ws_path || DEFAULT_WS_PATH;
+	const entryTransport = settings.entry_transport || INBOUND_TRANSPORT_DEFAULT;
 	const defaultOutbound = settings.default_outbound || OUTBOUND_DIRECT;
 	let adminPasswordHash = settings.admin_password_hash || '';
 	let adminTempPassword = null;
@@ -144,6 +213,15 @@ export async function createRequestConfig(request, env, options = {}) {
 	const outbounds = await loadOutbounds(DB);
 	const routingRules = await loadRoutingRules(DB);
 
+	// 到期流量重置（请求级幂等：traffic_reset_at 已过期才清零）
+	await Promise.all([
+		resetExpiredTraffic(DB, vlessUsers, 'vless_users'),
+		resetExpiredTraffic(DB, trojanUsers, 'trojan_users'),
+	]);
+
+	// 入站路径映射：全局 wsPath + 各用户自定义 path（含各自 /Tun grpc 后缀）
+	const inboundPathMap = buildInboundPathMap(wsPath, vlessUsers, trojanUsers);
+
 	// uuid -> remark / password -> remark 索引（用于流量统计记录 user id）
 	const vlessIndex = {};
 	for (const u of vlessUsers) vlessIndex[u.uuid] = u;
@@ -154,6 +232,7 @@ export async function createRequestConfig(request, env, options = {}) {
 		env,
 		settings,
 		wsPath,
+		entryTransport,
 		defaultOutbound,
 		adminPasswordHash,
 		adminTempPassword,
@@ -173,10 +252,12 @@ export async function createRequestConfig(request, env, options = {}) {
 		vlessIndex,
 		trojanIndex,
 		// 单个 uuid 校验集合（快速查找）
-		uuidSet: new Set(vlessUsers.map((u) => u.uuid)),
+		uuidSet: new Set(vlessUsers.map((u) => u.uuid.toLowerCase())),
 		passwordSet: new Set(trojanUsers.map((u) => u.password)),
 		// 出站按 name 索引
 		outboundByName: outbounds.reduce((m, o) => { m[o.name] = o; return m; }, {}),
+		// 入站路径 → 允许凭据作用域（全类型自动入站分发依据）
+		inboundPathMap,
 	};
 }
 

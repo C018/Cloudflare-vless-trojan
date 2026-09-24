@@ -31,6 +31,8 @@ export function sha224Sync(str) {
 export function isTrojanLike(buffer) {
 	if (buffer.byteLength < 60) return false;
 	const bytes = new Uint8Array(buffer);
+	// VLESS 首字节必为 version=0x00；首字节为 0 时不可能为 trojan（hash hex 首字符非 0）
+	if (bytes[0] === 0x00) return false;
 	return bytes[56] === 0x0d && bytes[57] === 0x0a;
 }
 
@@ -45,7 +47,10 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 		return { hasError: true, message: 'Invalid Trojan data: too short' };
 	}
 	const bytes = new Uint8Array(protocolBuffer);
-	const dataView = new DataView(protocolBuffer);
+	// createWsIO 归一化为 Uint8Array，需取其底层 buffer 构造 DataView
+	const dataView = protocolBuffer instanceof Uint8Array
+		? new DataView(protocolBuffer.buffer, protocolBuffer.byteOffset, protocolBuffer.byteLength)
+		: new DataView(protocolBuffer);
 
 	if (bytes[56] !== 0x0d || bytes[57] !== 0x0a) {
 		return { hasError: true, message: 'Invalid Trojan header: missing CRLF' };
@@ -56,7 +61,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 	// 多密码：逐一比对 sha224
 	for (const password of passwordSet) {
 		try {
-			const h = await sha224Hex(password);
+			const h = await sha224Sync(password);
 			if (h === receivedHash) { matchedPassword = password; break; }
 		} catch (e) { /* ignore */ }
 	}

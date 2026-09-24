@@ -16,6 +16,7 @@ import { safeCloseWebSocket } from './stream.js';
 import { rawConnect } from './vless-raw.js';
 import { httpUpgradeConnect } from './vless-httpupgrade.js';
 import { grpcConnect } from './vless-grpc.js';
+import { h2Connect } from './vless-h2.js';
 
 export const VLESS_OUTBOUND_TIMEOUT = 10000;
 
@@ -47,6 +48,8 @@ export async function vlessOutboundConnect(config, command, addressType, address
 			link = await httpUpgradeConnect(config, log);
 		} else if (transport === 'grpc') {
 			link = await grpcConnect(config, log);
+		} else if (transport === 'h2') {
+			link = await h2Connect(config, log);
 		}
 	} catch (err) {
 		log(`[VLESS/${transport}] connect failed: ${err.message}`);
@@ -84,6 +87,8 @@ async function wsConnect(config, log) {
 	let ws;
 	try {
 		ws = new WebSocket(wsURL);
+		// 确保二进制帧以 ArrayBuffer 交付（Node/undici 默认 Blob，会丢数据）
+		if ('binaryType' in ws) ws.binaryType = 'arraybuffer';
 	} catch (err) {
 		log(`[VLESS/ws] create ws failed: ${err.message}`);
 		return null;
@@ -140,7 +145,9 @@ async function wsConnect(config, log) {
 				if (!data) return;
 				if (!headerStripped) {
 					headerStripped = true;
-					if (data.length >= 2) {
+					// VLESS 服务端入站会在首个帧前附带 2 字节响应头（version=0, addonLen），
+					// 仅当首字节为 version(0) 时才剥离，避免误剥真实数据（如 HTTP 响应以 'H' 开头）。
+					if (data.length >= 2 && data[0] === 0) {
 						const addonLen = data[1];
 						if (data.length > 2 + addonLen) {
 							data = data.slice(2 + addonLen);

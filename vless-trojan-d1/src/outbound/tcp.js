@@ -16,7 +16,7 @@ import { OUTBOUND_DIRECT, OUTBOUND_REJECT, OUTBOUND_SOCKS5, OUTBOUND_HTTP, OUTBO
  * @param {number} port
  * @param {Uint8Array} initialData
  */
-function directConnect(config, hostname, port, initialData, log) {
+async function directConnect(config, hostname, port, initialData, log) {
 	const useProxyIp = config.proxyipHost && !config.proxyipDisabled;
 	const connHost = useProxyIp ? config.proxyipHost : hostname;
 	const connPort = useProxyIp ? Number(config.proxyipPort || 443) : port;
@@ -26,8 +26,15 @@ function directConnect(config, hostname, port, initialData, log) {
 		return null;
 	}
 	if (initialData && initialData.length > 0) {
+		// 必须在返回前完成写入并释放锁，否则调用方后续 getWriter 会报 WritableStream locked
 		const writer = socket.writable.getWriter();
-		writer.write(initialData).then(() => writer.releaseLock()).catch((e) => log(`direct initial write error: ${e.message}`));
+		try {
+			await writer.write(initialData);
+		} catch (e) {
+			log(`direct initial write error: ${e.message}`);
+		} finally {
+			try { writer.releaseLock(); } catch (e) { /* ignore */ }
+		}
 	}
 	return socket;
 }
@@ -74,7 +81,7 @@ export async function handleTcpOutbound(args) {
 		case OUTBOUND_SOCKS5: {
 			let parsed;
 			try {
-				parsed = parseSocks5Address(ob.address, { username: ob.username, password: ob.password });
+				parsed = parseSocks5Address(ob.address, { username: ob.username, password: ob.password, port: ob.port });
 			} catch (e) {
 				log(`bad socks5 address: ${e.message}`);
 				return null;
@@ -83,7 +90,13 @@ export async function handleTcpOutbound(args) {
 			if (!socket) return null;
 			if (rawClientData && rawClientData.length > 0) {
 				const writer = socket.writable.getWriter();
-				writer.write(rawClientData).then(() => writer.releaseLock()).catch((e) => log(`socks5 write error: ${e.message}`));
+				try {
+					await writer.write(rawClientData);
+				} catch (e) {
+					log(`socks5 write error: ${e.message}`);
+				} finally {
+					try { writer.releaseLock(); } catch (err) { /* ignore */ }
+				}
 			}
 			return socket;
 		}
@@ -91,7 +104,7 @@ export async function handleTcpOutbound(args) {
 		case OUTBOUND_HTTP: {
 			let parsed;
 			try {
-				parsed = parseHttpAddress(ob.address, { username: ob.username, password: ob.password });
+				parsed = parseHttpAddress(ob.address, { username: ob.username, password: ob.password, port: ob.port });
 			} catch (e) {
 				log(`bad http address: ${e.message}`);
 				return null;

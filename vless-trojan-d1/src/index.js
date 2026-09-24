@@ -13,6 +13,7 @@
 import { connect } from 'cloudflare:sockets';
 import { createRequestConfig } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
+import { handleH2Inbound, handleGrpcInbound } from './handlers/entry.js';
 import { handleHttp } from './handlers/http.js';
 import { handleAdminApi } from './admin/api.js';
 import { buildAdminUI } from './admin/ui.js';
@@ -20,6 +21,24 @@ import { handleCron, scheduled } from './cron.js';
 
 // Workers 平台 Socket 建连能力注入：direct / proxyip / socks5 / http 出站均依赖 globalThis.connect
 globalThis.connect = connect;
+
+/**
+ * 将路径映射命中的 scope 列表组合为会话校验集合。
+ * - 含 all（全局路径）→ 接受全部启用用户
+ * - 仅用户自定义路径 → 限定该路径注册的 vless uuid / trojan password
+ * @param {Array<{kind:string, credential?:string}>} scopes
+ * @returns {{all:boolean, vless:Set<string>, trojan:Set<string>}}
+ */
+function composeInboundScope(scopes) {
+	const vless = new Set();
+	const trojan = new Set();
+	for (const s of scopes) {
+		if (s.kind === 'all') return { all: true, vless, trojan };
+		if (s.kind === 'vless' && s.credential) vless.add(s.credential);
+		if (s.kind === 'trojan' && s.credential) trojan.add(s.credential);
+	}
+	return { all: false, vless, trojan };
+}
 
 export default {
 	/**
@@ -49,10 +68,24 @@ export default {
 				return await handleCron(request, env);
 			}
 
-			// 3) WebSocket 代理入站（ws_path 精确匹配）
+			// 3) 代理入站：按入站路径映射 + 请求特征自动分发（同一凭据同时支持 ws / grpc / h2）
 			const config = await createRequestConfig(request, env);
-			if (path === config.wsPath) {
-				return await handleWebSocketUpgrade(request, config, env);
+			const scopes = config.inboundPathMap.get(path);
+			if (scopes && scopes.length > 0) {
+				config._inboundScope = composeInboundScope(scopes);
+				const upgrade = String(request.headers.get('Upgrade') || '').toLowerCase();
+				const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+				const isGrpc = path.endsWith('/Tun') || contentType.includes('application/grpc');
+				if (upgrade === 'websocket' && !isGrpc) {
+					return await handleWebSocketUpgrade(request, config, env);
+				}
+				if (isGrpc) {
+					return await handleGrpcInbound(request, config, env);
+				}
+				// h2 入站客户端以 POST 建立（HTTP/2 请求）；GET 等普通请求交给订阅/伪装页
+				if (request.method === 'POST') {
+					return await handleH2Inbound(request, config, env);
+				}
 			}
 
 			// 4) 订阅 / 配置页 / 伪装页

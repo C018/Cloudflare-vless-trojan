@@ -72,6 +72,37 @@ export function buildAdminUI(tempPassword) {
   .net-dot.warn { background:#ffcc00; }
   .net-dot.bad { background:#ff9500; }
   .net-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:12px; color:var(--muted); }
+  /* ---- Apple style refinements ---- */
+  body { -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+  .card { transition:transform .15s ease, box-shadow .15s ease; }
+  .nav-item { transition:background .15s ease, color .15s ease; }
+  .btn { transition:opacity .15s ease, transform .1s ease; }
+  .btn:active { transform:scale(.97); }
+  .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  /* ---- Responsive: iPad ---- */
+  @media (max-width:1024px){
+    .sidebar { width:180px; }
+    .main { margin-left:180px; padding:24px; }
+    .page-title { font-size:24px; }
+  }
+  /* ---- Responsive: Phone ---- */
+  @media (max-width:768px){
+    .login-card { width:calc(100% - 40px); border-radius:20px; padding:32px 24px; }
+    .sidebar { position:fixed; top:auto; left:0; right:0; bottom:0; width:100%; height:58px; display:flex; align-items:center; justify-content:space-around; border-top:1px solid var(--border); border-right:0; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.9); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); z-index:40; }
+    .sidebar h2 { display:none; }
+    .nav-item { padding:6px 2px; font-size:10px; text-align:center; border-radius:8px; margin:0; white-space:nowrap; flex:1; }
+    .nav-item.active { background:var(--accent); }
+    .nav-item#logoutBtn { margin-top:0; }
+    .main { margin-left:0; padding:16px 12px 84px; }
+    .page-title { font-size:20px; margin-bottom:14px; }
+    .card { padding:14px; border-radius:14px; }
+    .toolbar { flex-wrap:wrap; }
+    .modal { width:100%; max-width:100%; max-height:86vh; border-radius:16px 16px 0 0; padding:20px 16px calc(20px + env(safe-area-inset-bottom)); }
+    .modal-mask { align-items:flex-end; }
+    .stat-grid { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+    table { min-width:620px; }
+    .net-grid { grid-template-columns:1fr; }
+  }
 </style>
 </head>
 <body>
@@ -118,9 +149,27 @@ export function buildAdminUI(tempPassword) {
 const $ = (s) => document.querySelector(s);
 const state = { tab:'stats', editing:null, schema:null, records:[] };
 const TAB_DEFS = {
-  vless:   { title:'VLESS 用户', api:'vless-users', fields:[{k:'uuid',label:'UUID'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
-  trojan:  { title:'Trojan 用户', api:'trojan-users', fields:[{k:'password',label:'密码'},{k:'remark',label:'备注'},{k:'enable',label:'启用',type:'checkbox'}] },
-  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
+  vless:   { title:'VLESS 用户', api:'vless-users', fields:[
+    {k:'uuid',label:'UUID'},
+    {k:'remark',label:'备注'},
+    {k:'path',label:'入站路径',placeholder:'留空使用全局入站路径（如 /ws）'},
+    {k:'expire_at',label:'到期时间',type:'datetime-local'},
+    {k:'traffic_limit',label:'流量限制(GB)',type:'number',placeholder:'0=不限'},
+    {k:'traffic_reset_at',label:'流量重置时间',type:'datetime-local',placeholder:'到此后自动清零已用流量'},
+    {k:'enable',label:'启用',type:'checkbox'},
+    {k:'status',label:'状态',type:'status'}
+  ]},
+  trojan:  { title:'Trojan 用户', api:'trojan-users', fields:[
+    {k:'password',label:'密码'},
+    {k:'remark',label:'备注'},
+    {k:'path',label:'入站路径',placeholder:'留空使用全局入站路径（如 /ws）'},
+    {k:'expire_at',label:'到期时间',type:'datetime-local'},
+    {k:'traffic_limit',label:'流量限制(GB)',type:'number',placeholder:'0=不限'},
+    {k:'traffic_reset_at',label:'流量重置时间',type:'datetime-local',placeholder:'到此后自动清零已用流量'},
+    {k:'enable',label:'启用',type:'checkbox'},
+    {k:'status',label:'状态',type:'status'}
+  ]},
+  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade','h2']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade/h2 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
   rules:   { title:'分流规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
 };
 
@@ -163,7 +212,7 @@ async function switchTab(tab){
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   const def = TAB_DEFS[tab];
-  mc.innerHTML = '<div class="page-title">'+def.title+'</div><div class="toolbar"><button class="btn small" onclick="openNew()">＋ 新增</button></div><div class="card"><table><thead><tr>'+def.fields.map(f=>'<th>'+f.label+'</th>').join('')+'<th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div>';
+  mc.innerHTML = '<div class="page-title">'+def.title+'</div><div class="toolbar"><button class="btn small" onclick="openNew()">＋ 新增</button></div><div class="card"><div class="table-wrap"><table><thead><tr>'+def.fields.map(f=>'<th>'+f.label+'</th>').join('')+'<th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div></div>';
   state.schema = def;
   await loadList();
 }
@@ -176,12 +225,25 @@ async function loadList(){
   tbody.innerHTML = rows.map((r,idx)=>{
     const tds = def.fields.map(f=>{
       if (f.type==='checkbox') return '<td>'+(r[f.k]? '<span class="badge on">开</span>':'<span class="badge off">关</span>')+'</td>';
+      if (f.type==='status') return statusCell(r);
       if (f.k==='uuid'||f.k==='password') return '<td class="mono">'+esc(r[f.k])+'</td>';
       return '<td>'+esc(r[f.k])+'</td>';
     }).join('');
     const testBtn = def.api==='outbounds' ? '<button class="btn small" onclick="testOutbound('+idx+', event)">测试</button> ' : '';
     return '<tr>'+tds+'<td>'+testBtn+'<button class="btn small" onclick="openEdit('+idx+')">编辑</button> <button class="btn small danger" onclick="delRow('+idx+')">删除</button></td></tr>';
   }).join('') || '<tr><td colspan="99" style="text-align:center;color:var(--muted)">暂无数据</td></tr>';
+}
+
+function statusCell(r){
+  const used = Number(r.up||0) + Number(r.down||0);
+  const limit = Number(r.traffic_limit||0);
+  const exp = Number(r.expire_at||0);
+  const now = Math.floor(Date.now()/1000);
+  let badge = '<span class="badge on">正常</span>';
+  if (exp>0 && exp<now) badge = '<span class="badge off">已到期</span>';
+  else if (limit>0 && used>=limit) badge = '<span class="badge off">已超限</span>';
+  const quota = limit>0 ? (fmtBytes(limit)) : '∞';
+  return '<td>'+badge+'<div style="font-size:11px;color:var(--muted);margin-top:2px">已用 '+fmtBytes(used)+' / '+quota+'</div></td>';
 }
 
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -214,10 +276,25 @@ function renderModalBody(){
   }
   $('#modalBody').innerHTML = fields.map(f=>{
     const val = state.draft[f.k];
+    if (f.type==='status') return '';
     if (f.type==='checkbox') return '<label><input type="checkbox" id="f_'+f.k+'" '+(val?'checked':'')+' onchange="collectDraft()"> '+f.label+'</label>';
     if (f.type==='select') return '<label>'+f.label+'</label><select id="f_'+f.k+'" onchange="collectDraft();renderModalBody()">'+f.opts.map(o=>'<option '+(o===val?'selected':'')+'>'+o+'</option>').join('')+'</select>';
-    return '<label>'+f.label+'</label><input type="'+ (f.type||'text') +'" id="f_'+f.k+'" value="'+esc(val)+'" oninput="collectDraft()"'+(f.placeholder?' placeholder="'+esc(f.placeholder)+'"':'')+'>';
+    const inputType = f.type==='datetime-local' ? 'datetime-local' : (f.type||'text');
+    const showVal = f.type==='datetime-local' ? toLocalInput(val) : val;
+    return '<label>'+f.label+'</label><input type="'+inputType+'" id="f_'+f.k+'" value="'+esc(showVal)+'" oninput="collectDraft()"'+(f.placeholder?' placeholder="'+esc(f.placeholder)+'"':'')+'>';
   }).join('');
+}
+
+function toLocalInput(sec){
+  if (!sec) return '';
+  const d = new Date(Number(sec) * 1000);
+  const p = (n)=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());
+}
+function fromLocalInput(v){
+  if (!v) return 0;
+  const t = Date.parse(v);
+  return t ? Math.floor(t/1000) : 0;
 }
 
 function collectDraft(){
@@ -228,6 +305,7 @@ function collectDraft(){
     if (!el) continue;
     if (f.type==='checkbox') draft[f.k] = el.checked ? 1 : 0;
     else if (f.type==='number') draft[f.k] = Number(el.value);
+    else if (f.type==='datetime-local') draft[f.k] = fromLocalInput(el.value);
     else draft[f.k] = el.value;
   }
   state.draft = draft;
@@ -272,7 +350,21 @@ async function loadStats(){
   } catch(e){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
 }
 function statBlock(title, rows){
-  const items = rows.map(r=>'<div class="stat-item"><div class="num">'+fmtBytes((r.up||0)+(r.down||0))+'</div><div class="lbl">'+esc(r.remark||r.uuid||r.password)+'</div><div class="lbl" style="font-size:11px">↑ '+fmtBytes(r.up||0)+' ↓ '+fmtBytes(r.down||0)+'</div></div>').join('');
+  const items = rows.map(r=>{
+    const used = Number(r.used || 0);
+    const remaining = r.remaining;
+    const limit = Number(r.traffic_limit||0);
+    let badge = '<span class="badge">不限流量</span>';
+    if (r.expired) badge = '<span class="badge off">已到期</span>';
+    else if (r.limitReached) badge = '<span class="badge off">已超限</span>';
+    else if (remaining!==null) badge = '<span class="badge on">剩余 '+fmtBytes(remaining)+'</span>';
+    const expTxt = r.expire_at ? fmtDate(r.expire_at) : '永久';
+    const quotaTxt = limit>0 ? (' / '+fmtBytes(limit)) : '';
+    return '<div class="stat-item"><div class="num">'+fmtBytes(used)+'</div><div class="lbl">'+esc(r.remark||r.uuid||r.password)+'</div>'+
+      '<div class="lbl" style="font-size:11px">↑ '+fmtBytes(r.up||0)+' ↓ '+fmtBytes(r.down||0)+quotaTxt+'</div>'+
+      '<div style="margin-top:6px">'+badge+'</div>'+
+      '<div class="lbl" style="font-size:11px;margin-top:2px">到期 '+expTxt+(r.traffic_reset_at? ' · 重置 '+fmtDate(r.traffic_reset_at):'')+'</div></div>';
+  }).join('');
   return '<h3 style="margin:16px 0 12px;font-size:18px">'+title+'</h3><div class="stat-grid">'+(items||'<div class="card">暂无数据</div>')+'</div>';
 }
 function fmtBytes(n){
@@ -282,20 +374,28 @@ function fmtBytes(n){
   do { v/=1024; i++; } while (v>=1024 && i<units.length-1);
   return v.toFixed(1)+' '+units[i];
 }
+function fmtDate(sec){
+  if (!sec) return '';
+  const d = new Date(Number(sec) * 1000);
+  const p = (n)=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
 
 async function loadSettings(){
   const mc = $('#mainContent');
   try {
     const s = await api('/admin/api/settings');
     const fields = [
-      ['ws_path','WebSocket 路径'],
+      ['ws_path','入站路径（ws / grpc / h2 共享；用户未自定义路径时回退到此值）'],
       ['default_outbound','默认出站 (direct / 出站名)'],
       ['proxyip','proxyip（代理 IP 或域名[:端口]，访问 Cloudflare 及开 CF CDN 网站使用；仅默认出站为 direct 时生效）'],
       ['udp_outbound','UDP 出站代理（出站名，仅 vless 支持 UDP）'],
       ['disguise_title','伪装页标题'],
       ['disguise_subtitle','伪装页副标题'],
     ];
-    mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">'+
+    mc.innerHTML = '<div class="page-title">系统设置</div>'+
+      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
+      '<div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
       '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="updateGeo()">更新 Geo 规则库</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
       '<div id="testResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
@@ -318,25 +418,31 @@ async function loadEntry(){
       ['entry_host','入口 IP / 域名'],
       ['entry_port','入口端口（默认 443）'],
       ['entry_sni','入口 SNI'],
-      ['entry_ws_host','入口 Host（WebSocket Host 头）'],
+      ['entry_ws_host','入口 Host（Host 头）'],
     ];
     mc.innerHTML = '<div class="page-title">入口设置</div>'+
-      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">设置入口后，节点/订阅将使用入口 IP/域名、端口、SNI、Host 生成配置（不再使用当前域名）；未设置则使用当前域名。</div>'+
+      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动支持 ws / grpc / h2 全类型传输（同一凭据自动分发），无需再选择传输模式。设置入口后，节点/订阅将使用入口 IP/域名、端口、SNI、Host 生成配置（不再使用当前域名）；未设置则使用当前域名。</div>'+
       '<div class="card">'+
-      fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" placeholder="'+(k==='entry_port'?'443':'')+'">').join('')+
+      fields.map(([k,label])=>{
+        return '<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" placeholder="'+(k==='entry_port'?'443':'')+'">';
+      }).join('')+
       '<div style="margin-top:16px"><button class="btn small" onclick="saveEntry()">保存入口设置</button></div></div>';
   } catch(e){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
 }
 
 async function saveEntry(){
   const body = {};
-  document.querySelectorAll('#mainContent input[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
+  document.querySelectorAll('#mainContent input[id^=s_], #mainContent select[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
   try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)}); toast('入口设置已保存'); }
   catch(e){ toast(e.message); }
 }
 
 async function updateGeo(){
-  try { const d = await api('/admin/api/geo/update',{method:'POST',body:'{}'}); toast('已更新 '+d.updated+' 个分类'); }
+  try {
+    const d = await api('/admin/api/geo/update',{method:'POST',body:'{}'});
+    const msg = '已更新 '+d.updated+' / '+d.total+' 个分类' + ((d.failed && d.failed.length) ? ('；失败: '+d.failed.join(', ')) : '');
+    toast(msg);
+  }
   catch(e){ toast('更新失败: '+e.message); }
 }
 

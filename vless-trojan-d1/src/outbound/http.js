@@ -74,7 +74,7 @@ export async function httpConnect(addressType, addressRemote, portRemote, log, p
  * 支持通过 credentials 传入外部凭据（后台 username/password 字段，优先于地址内嵌）
  */
 export function parseHttpAddress(address, credentials = {}) {
-	let [latter, former] = address.split('@').reverse();
+	let [latter, former] = String(address || '').trim().split('@').reverse();
 	let username, password, hostname, port;
 	if (former) {
 		const formers = former.split(':');
@@ -82,9 +82,19 @@ export function parseHttpAddress(address, credentials = {}) {
 		[username, password] = formers;
 	}
 	const latters = latter.split(':');
-	port = Number(latters.pop());
-	if (isNaN(port)) throw new Error('Invalid HTTP address format');
-	hostname = latters.join(':');
+	port = Number(latters[latters.length - 1]);
+	if (isNaN(port)) {
+		// address 仅主机（面板分字段保存：port 在独立字段），用 credentials.port 兜底
+		if (credentials && credentials.port !== undefined && credentials.port !== null && credentials.port !== '') {
+			port = Number(credentials.port);
+			hostname = latter;
+		} else {
+			throw new Error('Invalid HTTP address format');
+		}
+	} else {
+		hostname = latters.slice(0, -1).join(':');
+	}
+	if (isNaN(port) || !hostname) throw new Error('Invalid HTTP address format');
 	if (credentials && credentials.username !== undefined && credentials.username !== null && credentials.username !== '') {
 		username = credentials.username;
 	}

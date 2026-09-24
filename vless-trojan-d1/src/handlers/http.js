@@ -2,7 +2,7 @@
  * HTTP handlers: config page, subscription endpoints, disguise page
  */
 
-import { resolveHost, buildVlessLink, buildTrojanLink, buildPlainSubscription, buildBase64Subscription, buildClashSubscription, buildSingBoxSubscription } from '../generators/subscription.js';
+import { resolveHost, buildVlessLink, buildTrojanLink, INBOUND_TRANSPORTS, buildPlainSubscription, buildBase64Subscription, buildClashSubscription, buildSingBoxSubscription } from '../generators/subscription.js';
 import { buildConfigPage } from '../generators/config-page.js';
 import { buildDisguisePage } from '../disguise/alist.js';
 
@@ -60,16 +60,20 @@ function serveCredentialSubscription(request, config, credential, opts) {
 	const format = (url.searchParams.get('format') || 'base64').toLowerCase();
 	const host = opts.host;
 	const port = opts.port;
-	const wsPath = config.wsPath;
+	const wsPath = matched.user.path || config.wsPath;
 
-	let link;
-	if (matched.kind === 'vless') {
-		link = buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath: config.wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, remark: `vless-${matched.user.remark || 'node'}` });
-	} else {
-		link = buildTrojanLink({ password: matched.user.password, host, port, wsPath: config.wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, remark: `trojan-${matched.user.remark || 'node'}` });
+	// 入站支持 ws / grpc / h2 全类型，单凭据订阅输出三种传输节点
+	const links = [];
+	for (const transport of INBOUND_TRANSPORTS) {
+		if (matched.kind === 'vless') {
+			links.push(buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: `vless-${matched.user.remark || 'node'}-${transport}` }));
+		} else {
+			links.push(buildTrojanLink({ password: matched.user.password, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: `trojan-${matched.user.remark || 'node'}-${transport}` }));
+		}
 	}
-	if (format === 'plain') return text(link + '\n');
-	return text(btoa(link + '\n'));
+	const body = links.join('\n') + '\n';
+	if (format === 'plain') return text(body);
+	return text(btoa(body));
 }
 
 /**
@@ -109,10 +113,12 @@ export async function handleHttp(request, config, env) {
 	if (credMatch) {
 		const credential = decodeURIComponent(credMatch[1]);
 		if (config.uuidSet.has(credential)) {
-			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'vless' }));
+			const user = config.vlessIndex[credential];
+			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'vless', path: (user && user.path) || config.wsPath }));
 		}
 		if (config.passwordSet.has(credential)) {
-			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'trojan' }));
+			const user = config.trojanIndex[credential];
+			return html(buildConfigPage(config, { host: opts.host, port: opts.port, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, credential, kind: 'trojan', path: (user && user.path) || config.wsPath }));
 		}
 	}
 

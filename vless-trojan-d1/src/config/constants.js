@@ -30,8 +30,17 @@ export const OUTBOUND_HTTP = 'http';
 export const OUTBOUND_VLESS = 'vless';
 
 // ---- VLESS outbound transports ----
-export const OUTBOUND_TRANSPORTS = ['raw', 'ws', 'grpc', 'httpupgrade'];
+export const OUTBOUND_TRANSPORTS = ['raw', 'ws', 'grpc', 'httpupgrade', 'h2'];
 export const OUTBOUND_TRANSPORT_DEFAULT = 'ws';
+
+// ---- Inbound transports (entry) ----
+// 全类型自动入站：同一 uuid/password 同时支持 ws / grpc / h2（按请求特征自动分发）。
+// httpupgrade 入站依赖非 WS 的 raw Upgrade 裸流（101 Switching Protocols 后直接透传字节），
+// 而 Cloudflare Workers 平台仅允许 WebSocket 协议升级、且无法自定义 101 响应体/后续裸流，
+// 因此 httpupgrade 入站在纯 Workers 上无法真正实现（帧不兼容），不纳入自动分发。
+export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2'];
+export const INBOUND_TRANSPORT_DEFAULT = 'ws';
+// entry_transport 已废弃（保留常量仅用于旧库兼容与订阅默认值，不再参与入站分发）
 
 // ---- Geo keys ----
 export const GEO_KV_PREFIX_GEOSITE = 'geosite:';

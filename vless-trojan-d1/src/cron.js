@@ -15,8 +15,8 @@ export async function handleCron(request, env) {
 	if (request.method === 'POST' || request.method === 'GET') {
 		try {
 			const { DB, GEO_KV } = env;
-			const count = await updateGeo(DB, GEO_KV);
-			return new Response(JSON.stringify({ ok: true, updated: count }), {
+			const detail = await updateGeo(DB, GEO_KV);
+			return new Response(JSON.stringify({ ok: true, updated: detail.updated, total: detail.total, failed: detail.failed }), {
 				status: 200,
 				headers: { 'Content-Type': 'application/json; charset=utf-8' }
 			});
@@ -38,8 +38,8 @@ export async function handleCron(request, env) {
  */
 export async function scheduled(event, env, ctx) {
 	try {
-		const count = await updateGeo(env.DB, env.GEO_KV);
-		console.log(`[cron] geo update done: ${count} categories`);
+		const detail = await updateGeo(env.DB, env.GEO_KV);
+		console.log(`[cron] geo update done: ${detail.updated}/${detail.total} categories${detail.failed.length ? ', failed: ' + detail.failed.join('; ') : ''}`);
 	} catch (e) {
 		console.log(`[cron] geo update failed: ${e.message}`);
 	}
