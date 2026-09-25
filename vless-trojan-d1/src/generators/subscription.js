@@ -35,6 +35,7 @@ export function buildVlessLink(p) {
 		type: transport,
 		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
+		tfo: '1',
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
@@ -60,6 +61,7 @@ export function buildTrojanLink(p) {
 		type: transport,
 		host: wsHost,
 		security: p.tls ? 'tls' : 'none',
+		tfo: '1',
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
@@ -95,15 +97,16 @@ export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2'];
 export function buildNodeLinks(config, p) {
 	const links = [];
 	const port = p.port || (p.tls ? 443 : 80);
+	const transports = (p.transports && p.transports.length) ? p.transports : INBOUND_TRANSPORTS;
 	for (const u of config.vlessUsers) {
 		const wsPath = u.path || config.wsPath;
-		for (const transport of INBOUND_TRANSPORTS) {
+		for (const transport of transports) {
 			links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}` }));
 		}
 	}
 	for (const u of config.trojanUsers) {
 		const wsPath = u.path || config.wsPath;
-		for (const transport of INBOUND_TRANSPORTS) {
+		for (const transport of transports) {
 			links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `trojan-${u.remark || u.password.slice(0, 8)}-${transport}` }));
 		}
 	}
@@ -111,62 +114,71 @@ export function buildNodeLinks(config, p) {
 }
 
 /**
- * 纯文本订阅
+ * 纯文本订阅（支持多入口：targets 为数组，每项 {host,port,tls,wsHost,sni,transports,name}）
  */
-export function buildPlainSubscription(config, p) {
-	return buildNodeLinks(config, p).join('\n') + '\n';
+export function buildPlainSubscription(config, targets) {
+	const list = targets.flatMap((t) => buildNodeLinks(config, t));
+	return list.join('\n') + '\n';
 }
 
 /**
  * Base64 订阅（v2rayN 等）
  */
-export function buildBase64Subscription(config, p) {
-	return btoa(buildPlainSubscription(config, p));
+export function buildBase64Subscription(config, targets) {
+	return btoa(buildPlainSubscription(config, targets));
 }
 
 /**
- * Clash YAML 订阅
+ * Clash YAML 订阅（支持多入口：targets 为数组；多入口时节点名加入口备注前缀避免重名）
  */
-export function buildClashSubscription(config, p) {
-	const port = p.port || 443;
-	const tls = p.tls !== false;
-	const wsHost = p.wsHost || p.host;
-	const sni = p.sni || (tls ? wsHost : '');
+export function buildClashSubscription(config, targets) {
 	const proxies = [];
+	const multi = targets.length > 1;
 
-	const clashProxy = (name, type, credKey, cred, wsPath, transport) => {
-		const pr = {
-			name,
-			type,
-			server: p.host,
-			port,
-			[credKey]: cred,
-			network: transport,
-			tls,
-			'servername': sni || undefined,
-			'client-fingerprint': tls ? DEFAULT_FINGERPRINT : undefined,
-			udp: true
+	for (const t of targets) {
+		const port = t.port || 443;
+		const tls = t.tls !== false;
+		const wsHost = t.wsHost || t.host;
+		const sni = t.sni || (tls ? wsHost : '');
+		const transports = (t.transports && t.transports.length) ? t.transports : INBOUND_TRANSPORTS;
+		const prefix = multi ? (t.name || t.host) + '-' : '';
+
+		const clashProxy = (name, type, credKey, cred, wsPath, transport) => {
+			const pr = {
+				name: prefix + name,
+				type,
+				server: t.host,
+				port,
+				[credKey]: cred,
+				network: transport,
+				tls,
+				'servername': sni || undefined,
+				'client-fingerprint': tls ? DEFAULT_FINGERPRINT : undefined,
+				tfo: true,
+				udp: true,
+				_wsHost: wsHost,
+			};
+			if (transport === 'grpc') {
+				pr['grpc-opts'] = { 'grpc-service-name': `/${serviceNameOf(wsPath)}` };
+			} else if (transport === 'h2') {
+				pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
+			} else {
+				pr['ws-opts'] = { path: with0rtt(wsPath), headers: { Host: wsHost } };
+			}
+			return pr;
 		};
-		if (transport === 'grpc') {
-			pr['grpc-opts'] = { 'grpc-service-name': `/${serviceNameOf(wsPath)}` };
-		} else if (transport === 'h2') {
-			pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
-		} else {
-			pr['ws-opts'] = { path: with0rtt(wsPath), headers: { Host: wsHost } };
-		}
-		return pr;
-	};
 
-	config.vlessUsers.forEach((u, i) => {
-		for (const transport of INBOUND_TRANSPORTS) {
-			proxies.push(clashProxy(`vless-${u.remark || i + 1}-${transport}`, 'vless', 'uuid', u.uuid, u.path || config.wsPath, transport));
-		}
-	});
-	config.trojanUsers.forEach((u, i) => {
-		for (const transport of INBOUND_TRANSPORTS) {
-			proxies.push(clashProxy(`trojan-${u.remark || i + 1}-${transport}`, 'trojan', 'password', u.password, u.path || config.wsPath, transport));
-		}
-	});
+		config.vlessUsers.forEach((u, i) => {
+			for (const transport of transports) {
+				proxies.push(clashProxy(`vless-${u.remark || i + 1}-${transport}`, 'vless', 'uuid', u.uuid, u.path || config.wsPath, transport));
+			}
+		});
+		config.trojanUsers.forEach((u, i) => {
+			for (const transport of transports) {
+				proxies.push(clashProxy(`trojan-${u.remark || i + 1}-${transport}`, 'trojan', 'password', u.password, u.path || config.wsPath, transport));
+			}
+		});
+	}
 
 	const lines = ['proxies:'];
 	for (const pr of proxies) {
@@ -180,6 +192,7 @@ export function buildClashSubscription(config, p) {
 		lines.push(`    tls: ${pr.tls}`);
 		if (pr['servername']) lines.push(`    servername: ${pr['servername']}`);
 		if (pr['client-fingerprint']) lines.push(`    client-fingerprint: ${pr['client-fingerprint']}`);
+		lines.push(`    tfo: true`);
 		lines.push(`    udp: true`);
 		if (pr.network === 'grpc') {
 			lines.push(`    grpc-opts:`);
@@ -188,12 +201,12 @@ export function buildClashSubscription(config, p) {
 			lines.push(`    h2-opts:`);
 			lines.push(`      path: ${pr['h2-opts'].path}`);
 			lines.push(`      host:`);
-			lines.push(`        - ${wsHost}`);
+			lines.push(`        - ${pr._wsHost}`);
 		} else {
 			lines.push(`    ws-opts:`);
 			lines.push(`      path: ${pr['ws-opts'].path}`);
 			lines.push(`      headers:`);
-			lines.push(`        Host: ${wsHost}`);
+			lines.push(`        Host: ${pr._wsHost}`);
 		}
 	}
 	lines.push('');
@@ -203,14 +216,12 @@ export function buildClashSubscription(config, p) {
 }
 
 /**
- * sing-box JSON 订阅
+ * sing-box JSON 订阅（支持多入口：targets 为数组；多入口时 tag 加入口备注前缀避免重名）
  */
-export function buildSingBoxSubscription(config, p) {
-	const port = p.port || 443;
-	const wsHost = p.wsHost || p.host;
-	const sni = p.sni || (p.tls ? wsHost : '');
+export function buildSingBoxSubscription(config, targets) {
 	const outbounds = [];
-	const transportOf = (wsPath, transport) => {
+	const multi = targets.length > 1;
+	const transportOf = (wsPath, transport, wsHost) => {
 		if (transport === 'grpc') {
 			return { type: 'grpc', service_name: `/${serviceNameOf(wsPath)}` };
 		}
@@ -219,30 +230,40 @@ export function buildSingBoxSubscription(config, p) {
 		}
 		return { type: 'ws', path: with0rtt(wsPath), headers: { Host: wsHost } };
 	};
-	for (const u of config.vlessUsers) {
-		for (const transport of INBOUND_TRANSPORTS) {
-			outbounds.push({
-				type: 'vless',
-				tag: `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}`,
-				server: p.host,
-				server_port: port,
-				uuid: u.uuid,
-				transport: transportOf(u.path || config.wsPath, transport),
-				tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
-			});
+
+	for (const t of targets) {
+		const port = t.port || 443;
+		const wsHost = t.wsHost || t.host;
+		const sni = t.sni || (t.tls ? wsHost : '');
+		const transports = (t.transports && t.transports.length) ? t.transports : INBOUND_TRANSPORTS;
+		const prefix = multi ? (t.name || t.host) + '-' : '';
+		for (const u of config.vlessUsers) {
+			for (const transport of transports) {
+				outbounds.push({
+					type: 'vless',
+					tag: prefix + `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}`,
+					server: t.host,
+					server_port: port,
+					uuid: u.uuid,
+					transport: transportOf(u.path || config.wsPath, transport, wsHost),
+					tcp_fast_open: true,
+					tls: t.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
+				});
+			}
 		}
-	}
-	for (const u of config.trojanUsers) {
-		for (const transport of INBOUND_TRANSPORTS) {
-			outbounds.push({
-				type: 'trojan',
-				tag: `trojan-${u.remark || u.password.slice(0, 8)}-${transport}`,
-				server: p.host,
-				server_port: port,
-				password: u.password,
-				transport: transportOf(u.path || config.wsPath, transport),
-				tls: p.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
-			});
+		for (const u of config.trojanUsers) {
+			for (const transport of transports) {
+				outbounds.push({
+					type: 'trojan',
+					tag: prefix + `trojan-${u.remark || u.password.slice(0, 8)}-${transport}`,
+					server: t.host,
+					server_port: port,
+					password: u.password,
+					transport: transportOf(u.path || config.wsPath, transport, wsHost),
+					tcp_fast_open: true,
+					tls: t.tls ? { enabled: true, server_name: sni, fingerprint: DEFAULT_FINGERPRINT } : null,
+				});
+			}
 		}
 	}
 	return JSON.stringify({ outbounds, log: { level: 'info' } }, null, 2);

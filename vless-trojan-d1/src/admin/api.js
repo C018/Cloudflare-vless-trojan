@@ -6,7 +6,7 @@ import { hashPassword, verifyPassword, createSessionValue, verifySessionValue, p
 import { VERSION } from '../version.js';
 import { clearGeoCache } from '../routing/geo.js';
 import { GEO_KV_VERSION } from '../config/constants.js';
-import { runNetstatusTest, testProxyIp, testUdp, testOutbound } from '../netprobe.js';
+import { runNetstatusTest, testProxyIp, testUdp, testOutbound, testRoute } from '../netprobe.js';
 import { unzlibSync } from 'fflate';
 import { invalidateConfigCache } from '../config/defaults.js';
 
@@ -95,9 +95,23 @@ export async function handleAdminApi(request, config, ctx) {
 			const ALLOWED_SETTINGS = new Set([
 				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound',
 				'disguise_title', 'disguise_subtitle',
-				'entry_host', 'entry_port', 'entry_sni', 'entry_ws_host',
+				'entry_host', 'entry_port', 'entry_sni', 'entry_ws_host', 'entry_list',
 				'admin_password_hash', 'admin_cookie_secret',
 			]);
+			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/h2
+			if (body.entry_list !== undefined) {
+				try {
+					const arr = JSON.parse(body.entry_list);
+					if (!Array.isArray(arr) || arr.some((e) => !e || !String(e.host || '').trim())) {
+						return json({ error: 'entry_list 必须为入口数组（每项需包含 host）' }, 400);
+					}
+					if (arr.some((e) => Array.isArray(e.transports) && e.transports.some((t) => !['ws', 'grpc', 'h2'].includes(t)))) {
+						return json({ error: 'entry_list transports 仅允许 ws / grpc / h2' }, 400);
+					}
+				} catch (e) {
+					return json({ error: 'entry_list 不是合法 JSON 数组' }, 400);
+				}
+			}
 			for (const [key, value] of Object.entries(body)) {
 				if (typeof value !== 'string') continue;
 				if (!ALLOWED_SETTINGS.has(key)) continue;
@@ -214,6 +228,18 @@ export async function handleAdminApi(request, config, ctx) {
 	if (resource === 'netstatus' && segments[3] === 'test' && method === 'POST') {
 		try {
 			return json(await runNetstatusTest(config, (m) => console.log(m)));
+		} catch (e) {
+			return json({ ok: false, error: e.message }, 500);
+		}
+	}
+
+	// ---- 路由测试：按真实分流判定返回域名路由走向（direct / proxyip / outbound）----
+	if (resource === 'route-test' && method === 'POST') {
+		try {
+			const body = await readBody(request);
+			const domain = body && body.domain ? String(body.domain).trim() : '';
+			if (!domain) return json({ ok: false, error: '请填写要测试的域名或 IP' }, 400);
+			return json(await testRoute(config, domain, (m) => console.log(m)));
 		} catch (e) {
 			return json({ ok: false, error: e.message }, 500);
 		}

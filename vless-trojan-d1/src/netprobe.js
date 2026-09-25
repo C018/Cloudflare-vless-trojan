@@ -7,7 +7,7 @@
  */
 
 import { decideRoute } from './routing/engine.js';
-import { handleTcpOutbound, resolveOutbound } from './outbound/tcp.js';
+import { handleTcpOutbound, resolveOutbound, isCloudflareIp, isCloudflareDomain, isProxyIpDown } from './outbound/tcp.js';
 import { vlessOutboundConnect } from './outbound/vless.js';
 import { wrapUdpFrame, readUdpFrames } from './outbound/udp.js';
 
@@ -192,6 +192,71 @@ export async function runNetstatusTest(config, log) {
 			? r.value
 			: { ...NETSTAT_TARGETS[i], samples: [], latency: null, success: 0, total: 0, error: (r.reason && r.reason.message) || 'error' })
 	};
+}
+
+/**
+ * 路由测试：按真实转发判定逻辑（decideRoute 分流 + resolveOutbound 回退 + directConnect 的
+ * proxyip 替换规则）返回目标域名在当前配置下的实际路由走向。
+ * 与代理会话 handleTcpOutbound 走同一套判定：命中分流规则 → 出站名；未命中 → 默认出站；
+ * direct 路径下仅当 proxyip 启用（默认出站为 direct）且目标为 Cloudflare 站点且未 down 时走 proxyip。
+ * @param {Object} config 请求级配置
+ * @param {string} domain 目标域名或 IP（如 www.google.com / 1.1.1.1 / 2606:4700::1111）
+ * @returns {Promise<{ok:boolean, domain:string, route:string, name:string, reason:string, rule?:string|null}>}
+ */
+export async function testRoute(config, domain, log) {
+	const host = String(domain || '').trim().toLowerCase();
+	if (!host) return { ok: false, error: 'domain required' };
+
+	// 地址类型与 proxy-session 一致：1=IPv4 2=Domain 3=IPv6
+	let addressType = 2;
+	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) addressType = 1;
+	else if (host.includes(':')) addressType = 3;
+	const isIpLiteral = addressType !== 2;
+
+	const decision = await decideRoute(config, addressType, host);
+	const ruleHit = !!decision.rule;
+	const rulePrefix = ruleHit ? `分流规则 ${decision.rule.rule} → ` : '';
+
+	// 与 handleTcpOutbound 一致：先 resolveOutbound（未知出站名回退 direct）
+	const outbound = resolveOutbound(config, decision.outbound);
+
+	if (outbound === 'reject') {
+		return { ok: true, domain: host, route: 'reject', name: 'reject',
+			reason: ruleHit ? `${rulePrefix}reject（拒绝连接）` : '默认出站 reject（拒绝连接）',
+			rule: ruleHit ? decision.rule.rule : null };
+	}
+
+	if (outbound === 'direct') {
+		// 出站名不存在时 resolveOutbound 回退 direct：保留原始名字用于提示
+		const originalName = decision.outbound;
+		// 与 directConnect 判定完全一致
+		const proxyipEnabled = !!config.proxyipHost && !config.proxyipDisabled;
+		const proxyipDown = proxyipEnabled && isProxyIpDown();
+		const cfDomain = !isIpLiteral && isCloudflareDomain(host);
+		const cfIpLiteral = isIpLiteral && !host.includes(':') && isCloudflareIp(host);
+		if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral)) {
+			const ep = `${config.proxyipHost}:${Number(config.proxyipPort || 443)}`;
+			return { ok: true, domain: host, route: 'proxyip', name: ep,
+				reason: `${rulePrefix}Cloudflare 站点（已知 CF 后缀/IP 段）→ proxyip ${ep}`,
+				rule: ruleHit ? decision.rule.rule : null };
+		}
+		if (ruleHit) {
+			return { ok: true, domain: host, route: 'direct', name: 'direct',
+				reason: `${rulePrefix}direct`, rule: decision.rule.rule };
+		}
+		if (originalName && originalName !== 'direct' && originalName !== 'reject') {
+			return { ok: true, domain: host, route: 'direct', name: 'direct',
+				reason: `默认出站 ${originalName} 不存在，回退 direct`, rule: null };
+		}
+		return { ok: true, domain: host, route: 'direct', name: 'direct',
+			reason: '默认出站 direct', rule: null };
+	}
+
+	// 命中出站代理（socks5 / http / vless）：resolveOutbound 返回出站对象，取显示名
+	const outboundName = typeof outbound === 'string' ? outbound : outbound.name;
+	return { ok: true, domain: host, route: 'outbound', name: outboundName,
+		reason: ruleHit ? `${rulePrefix}出站 ${outboundName}` : `默认出站 ${outboundName}`,
+		rule: ruleHit ? decision.rule.rule : null };
 }
 
 /**

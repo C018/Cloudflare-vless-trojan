@@ -25,12 +25,16 @@ export function buildConfigPage(config, p) {
 	};
 
 	const links = [
-		{ name: 'WebSocket (ws)', link: linkOf('ws', 'ws') },
-		{ name: 'gRPC', link: linkOf('grpc', 'grpc') },
-		{ name: 'HTTP/2 (h2)', link: linkOf('h2', 'h2') },
-	];
+		{ key: 'ws', name: 'WebSocket (ws)', link: linkOf('ws', 'ws') },
+		{ key: 'grpc', name: 'gRPC', link: linkOf('grpc', 'grpc') },
+		{ key: 'h2', name: 'HTTP/2 (h2)', link: linkOf('h2', 'h2') },
+	].filter((l) => {
+		const transports = (p.transports && p.transports.length) ? p.transports : ['ws', 'grpc', 'h2'];
+		return transports.includes(l.key);
+	});
 
 	const label = p.kind === 'vless' ? 'VLESS' : 'Trojan';
+	const transportNames = links.map((l) => l.key).join(' / ');
 	const rows = links.map((l, i) => `
   <div class="row">
     <label>${l.name}</label>
@@ -63,7 +67,7 @@ export function buildConfigPage(config, p) {
 <body>
 <div class="card">
   <h1>${label} 节点 <span class="badge">${host}</span></h1>
-  <p class="desc">入站路径：<b>${cleanPath}</b>（服务端已自动兼容 ws / grpc / h2，复制任一链接导入客户端）</p>
+  <p class="desc">入站路径：<b>${cleanPath}</b>（当前入口支持：${transportNames || '无'}，复制链接导入客户端）</p>
   ${rows}
 </div>
 <script>

@@ -177,9 +177,10 @@ export function buildAdminUI(tempPassword) {
     <div class="nav-item" data-tab="netstatus">📡 网络状态</div>
     <div class="nav-item" data-tab="vless">🔑 VLESS 用户</div>
     <div class="nav-item" data-tab="trojan">🛡️ Trojan 用户</div>
-    <div class="nav-item" data-tab="outbounds">🌐 出站代理</div>
     <div class="nav-item" data-tab="entry">🚪 入口设置</div>
-    <div class="nav-item" data-tab="rules">🧭 分流规则</div>
+    <div class="nav-item" data-tab="outbounds">🌐 出站代理</div>
+    <div class="nav-item" data-tab="rules">🧭 路由规则</div>
+    <div class="nav-item" data-tab="routetest">🧭 路由测试</div>
     <div class="nav-item" data-tab="settings">⚙️ 系统设置</div>
     <div class="nav-item" id="logoutBtn" style="margin-top:20px;color:var(--danger)">↩ 退出登录</div>
   </aside>
@@ -238,7 +239,7 @@ const TAB_DEFS = {
     {k:'status',label:'状态',type:'status'}
   ]},
   outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade','h2']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade/h2 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
-  rules:   { title:'分流规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
+  rules:   { title:'路由规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
 };
 
 let token = null;
@@ -276,13 +277,46 @@ async function switchTab(tab){
   document.querySelectorAll('.nav-item[data-tab]').forEach(el=>el.classList.toggle('active', el.dataset.tab===tab));
   const mc = $('#mainContent');
   if (tab==='stats'){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载中...</div>'; await loadStats(); return; }
-  if (tab==='netstatus'){ clearNetAuto(); mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（分流规则 + 默认出站 + proxyip + 出站隧道），全部探测在 Worker 内完成，多目标并行、每目标 16 次采样，约 10-15 秒完成。绿=正常，黄=高延迟，红/灰=失败。</div><div class="net-toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button><label class="auto-refresh"><input type="checkbox" id="netAuto" checked onchange="scheduleNetAuto()"> 自动刷新</label><span class="net-update-time" id="netUpdateTime"></span></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
+  if (tab==='netstatus'){ clearNetAuto(); mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（路由规则 + 默认出站 + proxyip + 出站隧道），全部探测在 Worker 内完成，多目标并行、每目标 16 次采样，约 10-15 秒完成。绿=正常，黄=高延迟，红/灰=失败。</div><div class="net-toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button><label class="auto-refresh"><input type="checkbox" id="netAuto" checked onchange="scheduleNetAuto()"> 自动刷新</label><span class="net-update-time" id="netUpdateTime"></span></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
+  if (tab==='routetest'){ mc.innerHTML = '<div class="page-title">路由测试</div>'+ROUTE_TEST_CARD; return; }
   const def = TAB_DEFS[tab];
   mc.innerHTML = '<div class="page-title">'+def.title+'</div><div class="toolbar"><button class="btn small" onclick="openNew()">＋ 新增</button></div><div class="card"><div class="table-wrap"><table><thead><tr>'+def.fields.map(f=>'<th>'+f.label+'</th>').join('')+'<th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div></div>';
   state.schema = def;
   await loadList();
+}
+
+// 路由测试模块：独立菜单 tab，输入域名按当前配置判定真实路由走向
+const ROUTE_TEST_CARD = '<div class="card" id="routeTestCard" style="margin-top:16px">'+
+  '<h3 style="font-size:15px;margin-bottom:8px">🧭 路由测试</h3>'+
+  '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">输入域名或 IP，按当前配置（路由规则 → 默认出站 → proxyip）判定真实路由走向。direct 绿 / proxyip 蓝 / outbound 橙 / reject 红。</div>'+
+  '<div style="display:flex;gap:8px"><input id="routeTestDomain" placeholder="例如 www.google.com / 1.1.1.1" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:#fafafa"><button class="btn small" onclick="runRouteTest()">测试</button></div>'+
+  '<div id="routeTestResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
+
+// 路由测试输入框回车触发（事件委托，避免模板字符串内嵌 onkeydown 引号转义问题）
+document.addEventListener('keydown', function(e){
+  if (e.target && e.target.id === 'routeTestDomain' && e.key === 'Enter'){ e.preventDefault(); runRouteTest(); }
+});
+
+async function runRouteTest(){
+  const input = $('#routeTestDomain');
+  const el = $('#routeTestResult');
+  const domain = (input ? input.value : '').trim();
+  if (!domain){ if (el) el.innerHTML = '<span style="color:var(--danger)">请输入域名或 IP</span>'; return; }
+  const card = $('#routeTestCard');
+  const btn = card ? card.querySelector('button') : null;
+  if (btn){ btn.disabled = true; btn.textContent = '测试中…'; }
+  if (el) el.innerHTML = '测试中…';
+  try {
+    const r = await api('/admin/api/route-test',{method:'POST',body:JSON.stringify({domain})});
+    const map = { direct:{cls:'rt-direct',label:'DIRECT'}, proxyip:{cls:'rt-proxyip',label:'PROXYIP'}, outbound:{cls:'rt-outbound',label:'OUTBOUND'}, reject:{cls:'rt-reject',label:'REJECT'} };
+    const m = map[r.route] || map.direct;
+    el.innerHTML = '<div class="rt-box" style="background:'+(r.route==='proxyip'?'#0a84ff':(r.route==='outbound'?'#ff9500':(r.route==='reject'?'#ff3b30':'#34c759')))+'14;border:1px solid '+(r.route==='proxyip'?'#0a84ff':(r.route==='outbound'?'#ff9500':(r.route==='reject'?'#ff3b30':'#34c759')))+'66">'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="rt-route '+m.cls+'">'+m.label+'</span><b style="font-size:15px">'+esc(r.name||'')+'</b></div>'+
+      '<div class="rt-reason">'+esc(r.reason||'')+'</div></div>';
+  } catch(e){ el.innerHTML = '<span style="color:var(--danger)">测试失败：'+esc(e.message)+'</span>'; }
+  if (btn){ btn.disabled = false; btn.textContent = '测试'; }
 }
 
 async function loadList(){
@@ -484,30 +518,155 @@ async function saveSettings(){
   catch(e){ toast(e.message); }
 }
 
+const ENTRY_TRANSPORTS = ['ws', 'grpc', 'h2'];
+let entryBase = '';
+
+function ensureEntryStyle(){
+  if (document.getElementById('entryStyle')) return;
+  const st = document.createElement('style');
+  st.id = 'entryStyle';
+  st.textContent =
+    '.entry-card{background:#fff;border:1px solid var(--border,#e6e8ee);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:box-shadow .25s ease,border-color .25s ease}' +
+    '.entry-card:focus-within{box-shadow:0 4px 16px rgba(10,132,255,.10);border-color:rgba(10,132,255,.35)}' +
+    '.entry-card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}' +
+    '.entry-badge{width:24px;height:24px;border-radius:50%;background:var(--primary,#0a84ff);color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none}' +
+    '.entry-title{font-size:14px;font-weight:600;color:var(--text,#1d1d1f);flex:1}' +
+    '.entry-del{color:#ff3b30 !important;border:1px solid rgba(255,59,48,.25) !important;background:rgba(255,59,48,.06) !important}' +
+    '.entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}' +
+    '@media (max-width:560px){.entry-grid{grid-template-columns:1fr}}' +
+    '.entry-field label{display:block;font-size:12px;color:var(--muted,#8a94a6);margin-bottom:5px;font-weight:500}' +
+    '.entry-field input{width:100%;padding:9px 12px;border:1px solid var(--border,#e6e8ee);border-radius:10px;background:#f7f8fa;font-size:14px;color:var(--text,#1d1d1f);outline:none;transition:all .2s ease;box-sizing:border-box}' +
+    '.entry-field input:focus{background:#fff;border-color:var(--primary,#0a84ff);box-shadow:0 0 0 3px rgba(10,132,255,.12)}' +
+    '.entry-chips{display:flex;gap:8px;flex-wrap:wrap;padding-top:2px}' +
+    '.entry-chip{display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;border:1px solid var(--border,#e6e8ee);background:#f2f3f7;color:#6b7280;font-size:13px;font-weight:500;cursor:pointer;transition:all .2s ease;user-select:none}' +
+    '.entry-chip input{display:none}' +
+    '.entry-chip.on{background:var(--primary,#0a84ff);border-color:var(--primary,#0a84ff);color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(10,132,255,.35)}' +
+    '.entry-actions{display:flex;gap:10px;margin-top:14px;align-items:center}' +
+    '.entry-save{background:#e5e9f0 !important;color:#9aa3b2 !important;cursor:not-allowed !important;border:none !important;box-shadow:none !important;transition:all .25s ease !important;opacity:.8}' +
+    '.entry-save.dirty{background:var(--primary,#0a84ff) !important;color:#fff !important;cursor:pointer !important;box-shadow:0 2px 10px rgba(10,132,255,.35) !important;opacity:1}';
+  document.head.appendChild(st);
+}
+
+function entryCardHtml(e, i) {
+  const transports = ENTRY_TRANSPORTS.map(t => {
+    const on = (e.transports && e.transports.includes(t)) ? ' on' : '';
+    return '<label class="entry-chip' + on + '"><input type="checkbox" data-t="' + t + '"' + (on ? ' checked' : '') + '>' + t + '</label>';
+  }).join('');
+  return '<div class="entry-card">' +
+    '<div class="entry-card-head"><span class="entry-badge">' + (i + 1) + '</span><span class="entry-title">入口 ' + (i + 1) + '</span>' +
+    '<button class="btn small entry-del" onclick="removeEntry(this)">删除</button></div>' +
+    '<div class="entry-grid">' +
+    '<div class="entry-field"><label>备注</label><input data-f="remark" value="' + esc(e.remark || '') + '" placeholder="如 移动线路 / 电信线路"></div>' +
+    '<div class="entry-field"><label>入口 IP / 域名 *</label><input data-f="host" value="' + esc(e.host || '') + '" placeholder="如 cdn.example.com 或 1.2.3.4"></div>' +
+    '<div class="entry-field"><label>入口端口</label><input data-f="port" value="' + esc(e.port || '') + '" placeholder="443"></div>' +
+    '<div class="entry-field"><label>入口 SNI</label><input data-f="sni" value="' + esc(e.sni || '') + '" placeholder="默认同入口 Host"></div>' +
+    '<div class="entry-field"><label>入口 Host（Host 头）</label><input data-f="wsHost" value="' + esc(e.wsHost || '') + '" placeholder="默认同入口 Host"></div>' +
+    '<div class="entry-field"><label>支持协议</label><div class="entry-chips">' + transports + '</div></div>' +
+    '</div></div>';
+}
+
+function entrySnapshot(){
+  const rows = [];
+  document.querySelectorAll('#mainContent .entry-card').forEach(card => {
+    const r = {
+      host: card.querySelector('[data-f=host]').value.trim(),
+      port: card.querySelector('[data-f=port]').value.trim(),
+      sni: card.querySelector('[data-f=sni]').value.trim(),
+      wsHost: card.querySelector('[data-f=wsHost]').value.trim(),
+      remark: card.querySelector('[data-f=remark]').value.trim(),
+      transports: [],
+    };
+    card.querySelectorAll('input[type=checkbox][data-t]').forEach(cb => { if (cb.checked) r.transports.push(cb.dataset.t); });
+    r.transports.sort();
+    rows.push(r);
+  });
+  return JSON.stringify(rows);
+}
+
+function checkEntryDirty(){
+  const btn = $('#saveEntryBtn');
+  if (!btn) return;
+  const dirty = entrySnapshot() !== entryBase;
+  btn.classList.toggle('dirty', dirty);
+  btn.disabled = !dirty;
+}
+
+function onEntryInput(e){
+  if (!e.target.closest('.entry-card')) return;
+  // 协议胶囊：勾选状态实时同步高亮 class
+  if (e.target.matches && e.target.matches('input[type=checkbox][data-t]')) {
+    const chip = e.target.closest('.entry-chip');
+    if (chip) chip.classList.toggle('on', e.target.checked);
+  }
+  checkEntryDirty();
+}
+
 async function loadEntry(){
   const mc = $('#mainContent');
   try {
     const s = await api('/admin/api/settings');
-    const fields = [
-      ['entry_host','入口 IP / 域名'],
-      ['entry_port','入口端口（默认 443）'],
-      ['entry_sni','入口 SNI'],
-      ['entry_ws_host','入口 Host（Host 头）'],
-    ];
-    mc.innerHTML = '<div class="page-title">入口设置</div>'+
-      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动支持 ws / grpc / h2 全类型传输（同一凭据自动分发），无需再选择传输模式。设置入口后，节点/订阅将使用入口 IP/域名、端口、SNI、Host 生成配置（不再使用当前域名）；未设置则使用当前域名。</div>'+
-      '<div class="card">'+
-      fields.map(([k,label])=>{
-        return '<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" placeholder="'+(k==='entry_port'?'443':'')+'">';
-      }).join('')+
-      '<div style="margin-top:16px"><button class="btn small" onclick="saveEntry()">保存入口设置</button></div></div>';
+    let list = [];
+    try { const raw = s.entry_list; if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) list = arr; } } catch(e){ list = []; }
+    if (!list.length && (s.entry_host || '').trim()) {
+      list = [{ host: s.entry_host || '', port: s.entry_port || '', sni: s.entry_sni || '', wsHost: s.entry_ws_host || '', remark: '', transports: [] }];
+    }
+    if (!list.length) list = [{ host: '', port: '', sni: '', wsHost: '', remark: '', transports: [] }];
+    ensureEntryStyle();
+    mc.innerHTML = '<div class="page-title">入口设置</div>' +
+      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（ws/grpc/h2 全协议）。</div>' +
+      '<div id="entryCards">' + list.map(entryCardHtml).join('') + '</div>' +
+      '<div class="entry-actions"><button class="btn small" onclick="addEntry()">+ 添加入口</button>' +
+      '<button id="saveEntryBtn" class="btn small entry-save" onclick="saveEntry()" disabled>保存入口设置</button></div>';
+    const cards = $('#entryCards');
+    if (cards) {
+      cards.addEventListener('input', onEntryInput);
+      cards.addEventListener('change', onEntryInput);
+    }
+    entryBase = entrySnapshot();
+    checkEntryDirty();
   } catch(e){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
+}
+
+function addEntry(){
+  const box = $('#entryCards');
+  if (!box) return;
+  const div = document.createElement('div');
+  div.innerHTML = entryCardHtml({ host:'', port:'', sni:'', wsHost:'', remark:'', transports: [] }, box.children.length);
+  box.appendChild(div.firstChild);
+  checkEntryDirty();
+}
+function removeEntry(btn){
+  const card = btn.closest('.entry-card');
+  if (card) card.remove();
+  checkEntryDirty();
 }
 
 async function saveEntry(){
   const body = {};
-  document.querySelectorAll('#mainContent input[id^=s_], #mainContent select[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
-  try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)}); toast('入口设置已保存'); }
+  const list = [];
+  document.querySelectorAll('#mainContent .entry-card').forEach(card => {
+    const host = card.querySelector('[data-f=host]').value.trim();
+    if (!host) return;
+    const e = {
+      host,
+      port: card.querySelector('[data-f=port]').value.trim(),
+      sni: card.querySelector('[data-f=sni]').value.trim(),
+      wsHost: card.querySelector('[data-f=wsHost]').value.trim(),
+      remark: card.querySelector('[data-f=remark]').value.trim(),
+      transports: [],
+    };
+    card.querySelectorAll('input[type=checkbox][data-t]').forEach(cb => { if (cb.checked) e.transports.push(cb.dataset.t); });
+    list.push(e);
+  });
+  body['entry_list'] = JSON.stringify(list);
+  // 清空旧单入口字段，避免与多入口混用
+  ['entry_host','entry_port','entry_sni','entry_ws_host'].forEach(k => body[k] = '');
+  try {
+    await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});
+    toast('入口设置已保存');
+    entryBase = entrySnapshot();
+    checkEntryDirty();
+  }
   catch(e){ toast(e.message); }
 }
 

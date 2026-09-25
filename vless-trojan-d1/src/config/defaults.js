@@ -202,6 +202,45 @@ export async function ensureAdminPassword(db) {
 }
 
 /**
+ * 解析入口列表：优先 entry_list（JSON 数组，支持多入口 + 备注 + 每入口协议），
+ * 兼容旧单入口字段（entry_host / entry_port / entry_sni / entry_ws_host）。
+ * @param {Object} settings
+ * @returns {Array<{host:string,port:string,sni:string,wsHost:string,remark:string,transports:string[]}>}
+ */
+export function parseEntries(settings) {
+	let list = [];
+	try {
+		const raw = settings.entry_list;
+		if (raw) {
+			const arr = JSON.parse(raw);
+			if (Array.isArray(arr)) list = arr;
+		}
+	} catch (e) { list = []; }
+	if (!list.length && (settings.entry_host || '').trim()) {
+		list = [{
+			host: settings.entry_host,
+			port: settings.entry_port || '',
+			sni: settings.entry_sni || '',
+			wsHost: settings.entry_ws_host || '',
+			remark: '',
+			transports: [],
+		}];
+	}
+	return list.map((e) => {
+		const host = String(e.host || '').trim();
+		const wsHost = String(e.wsHost || '').trim() || host;
+		return {
+			host,
+			port: String(e.port || '').trim() || '443',
+			sni: String(e.sni || '').trim() || wsHost,
+			wsHost,
+			remark: String(e.remark || '').trim(),
+			transports: Array.isArray(e.transports) ? e.transports.filter((t) => ['ws', 'grpc', 'h2'].includes(t)) : ['ws', 'grpc', 'h2'],
+		};
+	}).filter((e) => e.host);
+}
+
+/**
  * 请求级配置对象：一次请求内只读一次 D1，统一缓存
  * @param {import('@cloudflare/workers-types').Request} request
  * @param {Object} env
@@ -237,11 +276,12 @@ export async function createRequestConfig(request, env, options = {}) {
 	}
 	// UDP 出站代理：出站名（仅 vless 支持 UDP）
 	const udpOutbound = settings.udp_outbound || '';
-	// 入口设置：设置后节点/订阅生成使用入口配置，未设置则使用当前域名
-	const entryHost = settings.entry_host || '';
-	const entryPort = settings.entry_port || '';
-	const entrySni = settings.entry_sni || '';
-	const entryWsHost = settings.entry_ws_host || '';
+	// 入口设置：多入口列表（entry_list JSON，支持多入口 + 备注 + 每入口协议），兼容旧单入口字段
+	const entries = parseEntries(settings);
+	const entryHost = entries.length ? entries[0].host : '';
+	const entryPort = entries.length ? entries[0].port : '';
+	const entrySni = entries.length ? entries[0].sni : '';
+	const entryWsHost = entries.length ? entries[0].wsHost : '';
 
 	const vlessUsers = await cachedLoad('vlessUsers', () => loadVlessUsers(DB));
 	const trojanUsers = await cachedLoad('trojanUsers', () => loadTrojanUsers(DB));
@@ -280,6 +320,7 @@ export async function createRequestConfig(request, env, options = {}) {
 		entryPort,
 		entrySni,
 		entryWsHost,
+		entries,
 		vlessUsers,
 		trojanUsers,
 		outbounds,

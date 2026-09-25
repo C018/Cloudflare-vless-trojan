@@ -76,7 +76,7 @@ function ipv4ToInt(ip) {
 }
 
 /** 判断 IPv4 是否属于 Cloudflare 地址段（即目标为 CF 托管/开启 Cloudflare 的站点） */
-function isCloudflareIp(ip) {
+export function isCloudflareIp(ip) {
 	if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false;
 	const n = ipv4ToInt(ip);
 	return CLOUDFLARE_IPV4_RANGES.some(([base, mask]) => (n & mask) === base);
@@ -87,7 +87,7 @@ const CLOUDFLARE_DOMAINS = [
 	'.cloudflare.com', '.cloudflare.net', '.jsdelivr.net', '.workers.dev',
 	'.pages.dev', '.trycloudflare.com', '.cf-ipfs.com', '.cloudflareinsights.com'
 ];
-function isCloudflareDomain(hostname) {
+export function isCloudflareDomain(hostname) {
 	const h = hostname.toLowerCase();
 	return CLOUDFLARE_DOMAINS.some((s) => h === s.slice(1) || h.endsWith(s));
 }
@@ -114,6 +114,11 @@ function maybeResetProxyIpHealth(log) {
 		proxyipHealth.state = 'unknown';
 		log('proxyip health reset to unknown, will retry proxyip');
 	}
+}
+
+/** 当前 proxyIP 是否处于 down 冷却期（60s 内走直连、不走 proxyip） */
+export function isProxyIpDown() {
+	return proxyipHealth.state === 'down' && Date.now() - proxyipHealth.downAt < PROXYIP_DOWN_TTL;
 }
 
 /**
