@@ -16,6 +16,15 @@ import { decideRoute } from '../routing/engine.js';
 // VLESS 空包帧（0x00 0x00）：服务端握手响应头与心跳保活帧内容相同，复用同一常量避免每连接/每心跳分配
 const VLESS_EMPTY_FRAME = new Uint8Array([0x00, 0x00]);
 
+// 下行批处理合并（CF 官方建议：将多条逻辑消息打包为单个 WebSocket 帧发送，降低上下文切换开销）。
+// 背景：单 DO 约 1000 req/s 软上限 + 高频小消息的 JS<->底层上下文切换先于字节量打爆单对象，
+// 表现为高吞吐持续转发下"冲高->排队/过载->回落"的锯齿吞吐。合并目标：小帧累积到 32KB 再 send，
+// 消息数按比例下降（若平台 socket 帧 4KB，消息数降 8 倍），推迟过载拐点。
+const MERGE_TARGET = 32 * 1024; // 合并目标：累积到 32KB 才 send（大帧直通不受影响）
+const MERGE_FLUSH_TIMEOUT = 15; // 累积中若数据流中断超过该时长，先 flush 累积（毫秒，流媒体缓冲可吸收）
+const YIELD_BYTES = 2 * 1024 * 1024; // 每转发 2MB 让出一次事件循环：让上行消息（客户端 ACK/控制帧）、
+// 心跳与平台 CPU 计量插队，防止单线程连续转发链饿死上行事件导致目标服务器 TCP 窗口坍缩、或触发平台限流断连
+
 /**
  * 处理一次代理会话（io 已就绪）
  * @param {Object} config
@@ -243,15 +252,116 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				continue;
 			}
 
-			// 首包竞态结束后：普通下行循环（直读解构，避免每帧构造 {tag:'read',...} 对象 + spread 分配）
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (value && value.byteLength > 0) {
-				gotFirst = true;
-				downBytes += value.byteLength;
-				lastActivity = Date.now();
-				await io.write(value);
+			// 普通下行循环：小帧合并批处理 + 周期让出
+			// - 合并：小帧累积到 MERGE_TARGET 再 send，WS 消息数按比例下降，
+			//   降低单 DO 高频小消息的上下文切换开销，缓解吞吐锯齿
+			// - 让出：每转发 YIELD_BYTES 让出一次事件循环，让上行消息（客户端 ACK/
+			//   控制帧）、心跳与平台 CPU 计量有机会插队，防止单线程连续链饿死上行
+			//   导致的 TCP 窗口坍缩 / 平台限流断连
+			// - 兜底：累积中数据流中断超过 MERGE_FLUSH_TIMEOUT 时先 flush，避免尾包滞留
+			// 累积缓冲：动态扩容（按需 2 倍），避免每帧重建整个累积数组。
+			// 原实现每次合并 new Uint8Array(mergedLen) + 全量 set(acc)，N 帧累积总拷贝 O(N²)；
+			// 改为单缓冲原地追加，总拷贝 O(N)（扩容次数 2 倍封顶）。
+			let accBuf = null;
+			let accLen = 0;
+			const flushAcc = async () => {
+				if (accLen > 0) {
+					await io.write(accBuf.subarray(0, accLen));
+					// 置空让旧 buffer 可被回收；平台 send 后若异步引用，也不再被写入覆盖
+					accBuf = null;
+					accLen = 0;
+				}
+			};
+			const appendAcc = (value) => {
+				const need = accLen + value.byteLength;
+				if (!accBuf) {
+					// 初始容量：首帧大小与 4KB 取大（平台 socket 帧常见 4KB 粒度）
+					accBuf = new Uint8Array(Math.max(need, 4096));
+				} else if (need > accBuf.length) {
+					const nb = new Uint8Array(Math.max(accBuf.length * 2, need));
+					nb.set(accBuf.subarray(0, accLen), 0);
+					accBuf = nb;
+				}
+				accBuf.set(value, accLen);
+				accLen = need;
+			};
+			let bytesSinceYield = 0;
+			let downFinished = false;
+			for (;;) {
+				if (bytesSinceYield >= YIELD_BYTES) {
+					bytesSinceYield = 0;
+					await new Promise((r) => setTimeout(r, 0));
+				}
+				if (accLen > 0) {
+					// 已在累积：read 带超时兜底（acc 非空时每帧一个 timer，仅小帧合并阶段产生）
+					const rp = reader.read().then((r) => ({ tag: 'read', done: r.done, value: r.value }));
+					let tpTimer = null;
+					const tp = new Promise((res) => { tpTimer = setTimeout(() => res({ tag: 'timeout' }), MERGE_FLUSH_TIMEOUT); });
+					const result = await Promise.race([rp, tp]);
+					// 无论谁先返回都清理 timer：read 先返回时若不清理，每个小帧会泄漏一个
+					// 15ms 定时器，高吞吐下堆积成百上千个悬空 timer，放大上下文切换开销
+					clearTimeout(tpTimer);
+					if (result.tag === 'timeout') {
+						// 数据流中断：先 flush 累积，再等待本次已挂起的 read 返回。
+						// 严禁在此 continue 后再次 reader.read()——同一 reader 同时只允许一个
+						// pending read，二次调用抛 TypeError，会被外层 catch 静默吞掉并终止
+						// 下行转发，导致连接下行永久停滞（1.0.50 大几百 ms 延迟回归的根因）。
+						await flushAcc();
+						const late = await rp;
+						if (late.done) {
+							downFinished = true;
+							break;
+						}
+						const lv = late.value;
+						if (lv && lv.byteLength > 0) {
+							gotFirst = true;
+							downBytes += lv.byteLength;
+							bytesSinceYield += lv.byteLength;
+							lastActivity = Date.now();
+							await io.write(lv);
+						}
+						continue;
+					}
+					if (result.done) {
+						await flushAcc();
+						downFinished = true;
+						break;
+					}
+					const value = result.value;
+					if (!value || value.byteLength === 0) continue;
+					gotFirst = true;
+					downBytes += value.byteLength;
+					bytesSinceYield += value.byteLength;
+					lastActivity = Date.now();
+					if (accLen + value.byteLength <= MERGE_TARGET) {
+						appendAcc(value);
+						if (accLen >= MERGE_TARGET) await flushAcc();
+					} else {
+						// 累积已满且新帧放不下：先 flush 累积，新帧直通（大帧不进入合并，保持延迟）
+						await flushAcc();
+						await io.write(value);
+					}
+				} else {
+					// 未在累积：普通直读（不构造包装对象，避免每帧分配）
+					const { done, value } = await reader.read();
+					if (done) {
+						downFinished = true;
+						break;
+					}
+					if (!value || value.byteLength === 0) continue;
+					gotFirst = true;
+					downBytes += value.byteLength;
+					bytesSinceYield += value.byteLength;
+					lastActivity = Date.now();
+					if (value.byteLength >= MERGE_TARGET) {
+						await io.write(value);
+					} else {
+						// 小帧进入累积（拷贝到独立缓冲，避免平台复用 read 返回的 buffer）
+						appendAcc(value);
+					}
+				}
 			}
+			if (downFinished) break;
 		}
 	} catch (e) {
 		// 首包到达前的 socket error/close（CF 拦截常表现为连接立即被重置）→ 尝试回退换路

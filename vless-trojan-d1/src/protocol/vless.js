@@ -5,10 +5,29 @@
 
 import { byteToHex } from '../config/constants.js';
 
+// 复用 TextDecoder：decode() 非流模式下每次调用独立、无残留状态，可安全跨调用复用
+const TEXT_DECODER = new TextDecoder();
+
+// uuid 字符串 -> 16 字节 缓存：同一出站 uuid 每次建连都重复 replace + 16 次 parseInt，
+// 缓存后 O(1) 命中（出站 uuid 数量极少，64 项上限足够；到达上限清空重建，避免无限增长）
+const uuidBytesCache = new Map();
+const UUID_CACHE_MAX = 64;
+function uuidToBytes(uuid) {
+	let b = uuidBytesCache.get(uuid);
+	if (b) return b;
+	const s = uuid.replace(/-/g, '');
+	b = new Uint8Array(16);
+	for (let i = 0; i < 16; i++) b[i] = parseInt(s.substr(i * 2, 2), 16);
+	if (uuidBytesCache.size >= UUID_CACHE_MAX) uuidBytesCache.clear();
+	uuidBytesCache.set(uuid, b);
+	return b;
+}
+
 /** @param {Uint8Array} bytes */
 function bytesToUuid(bytes) {
+	// byteToHex 已为小写十六进制，toLowerCase() 属冗余的全串扫描分配（uuidSet/vlessIndex 均按小写建索引）
 	const h = (i) => byteToHex[bytes[i]];
-	return `${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}`.toLowerCase();
+	return `${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}`;
 }
 
 /**
@@ -57,7 +76,7 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 			}
 			addressLength = dataView.getUint8(portIndex + 3);
 			addressValueIndex = portIndex + 4;
-			addressValue = new TextDecoder().decode(view.subarray(addressValueIndex, addressValueIndex + addressLength));
+			addressValue = TEXT_DECODER.decode(view.subarray(addressValueIndex, addressValueIndex + addressLength));
 			break;
 		case 3: // IPv6
 			addressLength = 16;
@@ -113,12 +132,9 @@ export function makeVlessRequestHeader(command, addressType, addressRemote, port
 			throw new Error(`Unknown address type: ${addressType}`);
 	}
 
-	const uuidString = uuid.replace(/-/g, '');
 	const header = new Uint8Array(22 + addressFieldLength);
 	header[0] = 0x00;
-	for (let i = 0; i < uuidString.length; i += 2) {
-		header[1 + i / 2] = parseInt(uuidString.substr(i, 2), 16);
-	}
+	header.set(uuidToBytes(uuid), 1); // 缓存命中 O(1)，避免每次建连重复 replace + 16 次 parseInt
 	header[17] = 0x00; // additional info length
 	header[18] = command;
 	header[19] = portRemote >> 8;

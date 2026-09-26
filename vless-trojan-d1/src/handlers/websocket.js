@@ -40,7 +40,17 @@ function normalizeToUint8Array(data) {
  * @returns {Uint8Array|null}
  */
 export function extractEarlyData(request, log) {
-	const edParam = new URL(request.url).searchParams.get('ed');
+	// 字符串提取 ?ed= 参数：避免每个 WS 升级连接重复 new URL(request.url)
+	// （index.js / session-do.js 的 fetch 已解析过 URL）；语义与 URLSearchParams.get 等价
+	// （取首个匹配、解码 percent-encoding），但省一次完整 URL 解析 + URLSearchParams 分配
+	let edParam = null;
+	const qIdx = request.url.indexOf('?');
+	if (qIdx >= 0) {
+		const m = request.url.slice(qIdx + 1).match(/(?:^|&)ed=([^&#]*)/);
+		if (m) {
+			try { edParam = decodeURIComponent(m[1]); } catch (e) { edParam = m[1]; }
+		}
+	}
 	// 降噪：ed=2560 是 xray 客户端标准声明，正常 0-RTT 连接不打注入/无负载日志；
 	// 仅当 ed 参数缺失或非预期值时保留日志（异常/兼容性排障有价值）
 	const quietEd = edParam === '2560';
@@ -73,6 +83,9 @@ export async function handleWebSocketUpgrade(request, config, env) {
 	}
 	const [client, server] = Object.values(new WebSocketPair());
 	server.accept();
+	// 显式声明二进制帧投递为 ArrayBuffer：若平台默认 Blob，每帧消息都要 await arrayBuffer()
+	// 异步转换 + 拷贝，高吞吐上行（客户端 ACK/控制帧）时放大单 DO 上下文切换开销，加剧锯齿
+	server.binaryType = 'arraybuffer';
 
 	const log = (...args) => console.log('[ws]', ...args);
 	// accept() 同步返回后、processProxySession 启动前注入 early data（若有）

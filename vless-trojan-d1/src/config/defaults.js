@@ -319,8 +319,10 @@ export async function createRequestConfig(request, env, options = {}) {
 	const inboundPathMap = buildInboundPathMap(wsPath, vlessUsers, trojanUsers);
 
 	// uuid -> remark / password -> remark 索引（用于流量统计记录 user id）
+	// uuid 键统一小写：processVlessHeader 输出小写 uuid（byteToHex 小写），
+	// uuidSet 亦小写化；后台若存大写 uuid，原始大小写索引会查不到 → 流量统计丢失
 	const vlessIndex = {};
-	for (const u of vlessUsers) vlessIndex[u.uuid] = u;
+	for (const u of vlessUsers) vlessIndex[u.uuid.toLowerCase()] = u;
 	const trojanIndex = {};
 	for (const u of trojanUsers) trojanIndex[u.password] = u;
 

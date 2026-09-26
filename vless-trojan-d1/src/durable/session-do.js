@@ -26,6 +26,9 @@ import { safeCloseWebSocket } from '../outbound/stream.js';
 // 与 index.js 一致的平台 Socket 建连能力注入（幂等，bundle 顶层执行）
 globalThis.connect = connect;
 
+// 复用 TextEncoder：DO 内 string 帧每帧 new 一次属无谓分配（高频小消息场景叠加明显）
+const DO_TEXT_ENCODER = new TextEncoder();
+
 export class ProxySessionDO {
 	constructor(state, env) {
 		this.state = state;
@@ -87,7 +90,7 @@ export class ProxySessionDO {
 		} else if (ArrayBuffer.isView(message)) {
 			bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
 		} else if (typeof message === 'string') {
-			bytes = new TextEncoder().encode(message);
+			bytes = DO_TEXT_ENCODER.encode(message);
 		}
 		if (!bytes || bytes.byteLength === 0) return;
 		// 注意：此处禁止每帧打日志——大流量下载时每帧 console.log 会同步拖慢 DO 事件循环，严重拉低吞吐

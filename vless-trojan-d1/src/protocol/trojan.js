@@ -3,6 +3,9 @@
  * Header: sha224(password) hex(56) + CRLF + cmd(1) + atyp(1) + addr + port(2 BE) + CRLF + payload
  */
 
+// 复用 TextDecoder：decode() 非流模式下每次调用独立、无残留状态，可安全跨调用复用
+const TEXT_DECODER = new TextDecoder();
+
 /**
  * sha224 hex (WebCrypto 实现)
  * @param {string} str
@@ -34,7 +37,8 @@ export function sha224Sync(str) {
  */
 export function isTrojanLike(buffer) {
 	if (buffer.byteLength < 60) return false;
-	const bytes = new Uint8Array(buffer);
+	// Uint8Array 视图零拷贝：new Uint8Array(typedArray) 是拷贝构造，每连接省 2 次 60 字节拷贝
+	const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 	// VLESS 首字节必为 version=0x00；首字节为 0 时不可能为 trojan（hash hex 首字符非 0）
 	if (bytes[0] === 0x00) return false;
 	return bytes[56] === 0x0d && bytes[57] === 0x0a;
@@ -50,7 +54,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 	if (protocolBuffer.byteLength < 60) {
 		return { hasError: true, message: 'Invalid Trojan data: too short' };
 	}
-	const bytes = new Uint8Array(protocolBuffer);
+	const bytes = protocolBuffer instanceof Uint8Array ? protocolBuffer : new Uint8Array(protocolBuffer);
 	// createWsIO 归一化为 Uint8Array，需取其底层 buffer 构造 DataView
 	const dataView = protocolBuffer instanceof Uint8Array
 		? new DataView(protocolBuffer.buffer, protocolBuffer.byteOffset, protocolBuffer.byteLength)
@@ -60,7 +64,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 		return { hasError: true, message: 'Invalid Trojan header: missing CRLF' };
 	}
 
-	const receivedHash = new TextDecoder().decode(bytes.subarray(0, 56));
+	const receivedHash = TEXT_DECODER.decode(bytes.subarray(0, 56));
 	let matchedPassword = null;
 	// 先查反向索引（O(1)）：同一 hash 已被任一密码回填时直接命中，免去多密码循环比对
 	const reverseHit = sha224Reverse.get(receivedHash);
@@ -102,7 +106,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 			if (protocolBuffer.byteLength < addressValueIndex + addressLength + 2) {
 				return { hasError: true, message: 'Invalid Trojan header: domain truncated' };
 			}
-			addressValue = new TextDecoder().decode(bytes.subarray(addressValueIndex, addressValueIndex + addressLength));
+			addressValue = TEXT_DECODER.decode(bytes.subarray(addressValueIndex, addressValueIndex + addressLength));
 			break;
 		case 4: // IPv6
 			addressLength = 16;
