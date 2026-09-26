@@ -7,7 +7,7 @@
  */
 
 import { decideRoute } from './routing/engine.js';
-import { handleTcpOutbound, resolveOutbound, isCloudflareIp, isCloudflareDomain, isProxyIpDown } from './outbound/tcp.js';
+import { handleTcpOutbound, resolveOutbound, isCloudflareIp, isCloudflareDomain, isProxyIpDown, resolveViaDoH } from './outbound/tcp.js';
 import { vlessOutboundConnect } from './outbound/vless.js';
 import { wrapUdpFrame, readUdpFrames } from './outbound/udp.js';
 
@@ -234,7 +234,13 @@ export async function testRoute(config, domain, log) {
 		const proxyipDown = proxyipEnabled && isProxyIpDown();
 		const cfDomain = !isIpLiteral && isCloudflareDomain(host);
 		const cfIpLiteral = isIpLiteral && !host.includes(':') && isCloudflareIp(host);
-		if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral)) {
+		// 与 directConnect 一致：未知域名 DoH 预解析 IP 落 CF 段 → 判定为 Cloudflare 站点，走 proxyip
+		let cfResolvedDomain = false;
+		if (proxyipEnabled && !proxyipDown && !isIpLiteral && !cfDomain) {
+			const ip = await resolveViaDoH(host, log);
+			if (ip && isCloudflareIp(ip)) cfResolvedDomain = true;
+		}
+		if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral || cfResolvedDomain)) {
 			if (config.proxyipOutbound) {
 				return { ok: true, domain: host, route: 'proxyip', name: `outbound:${config.proxyipOutbound}`,
 					reason: `${rulePrefix}Cloudflare 站点（已知 CF 后缀/IP 段）→ 使用出站代理 ${config.proxyipOutbound} 出站`,

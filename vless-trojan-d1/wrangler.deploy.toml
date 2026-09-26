@@ -1,5 +1,5 @@
-name = "cf-vless-trojan-d1"
-main = "_worker.js"
+name = "xui"
+main = "src/index.js"
 compatibility_date = "2026-09-08"
 
 [triggers]
@@ -13,7 +13,7 @@ region = "gcp:asia-east2"
 [observability]
 enabled = true
 
-# geo 更新队列：手动/定时更新入队，由 consumer 独立执行（不受请求 30s 限制，失败自动重试）
+# geo 更新队列：手动/定时更新入队，由 consumer 独立执行
 [[queues.producers]]
 binding = "GEO_QUEUE"
 queue = "cf-vless-trojan-d1-geo-update"
@@ -27,16 +27,19 @@ dead_letter_queue = "cf-vless-trojan-d1-geo-update-dlq"
 [[d1_databases]]
 binding = "DB"
 database_name = "cf-vless-trojan-d1"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "5f52cce4-aab3-4db4-b34b-0e2edf61ae86"
 
 [[kv_namespaces]]
 binding = "GEO_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "1e0672d1e9cf4c4d9b6f91976d471249"
 
 # Durable Objects：WebSocket 代理会话托管（长连接，突破 30s idle 断连）
+# 注意：不写 [[migrations]] —— 线上已存在 ProxySessionDO 类，
+# new_sqlite_classes 重复声明会报 code 10074
 [durable_objects]
 bindings = [{ name = "PROXY_DO", class_name = "ProxySessionDO" }]
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["ProxySessionDO"]
+# wrangler 4 新语法：声明 DO 类的 live exports（storage=sqlite 与线上已迁移类一致）
+[exports.ProxySessionDO]
+type = "durable-object"
+storage = "sqlite"

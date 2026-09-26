@@ -62,7 +62,7 @@ export default {
 				if (upgrade === 'websocket' && !isGrpc) {
 					// DO 托管长连接会话，突破 30s idle 断连；未配置 DO binding 时回退 Worker 内处理
 					if (env.PROXY_DO) {
-						const doId = env.PROXY_DO.idFromUniqueId(crypto.randomUUID());
+						const doId = env.PROXY_DO.newUniqueId();
 						return await env.PROXY_DO.get(doId).fetch(request);
 					}
 					return await handleWebSocketUpgrade(request, config, env);

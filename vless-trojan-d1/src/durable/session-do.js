@@ -4,17 +4,17 @@
  * 目的：将 WebSocket 代理入站会话托管到 DO，突破 Workers 无状态请求
  * 30s idle 断连限制，Telegram 等长连接不再「正在刷新」。
  *
- * 设计（标准模式，非 Hibernation 事件驱动）：
+ * 设计（Hibernation API + 会话后台循环）：
  * - fetch 内校验 Upgrade → state.acceptWebSocket 接管握手，立即返回 101；
- * - processProxySession 作为后台任务持续运行（io.read 挂起等帧）；
- * - DO 因存在活跃 WebSocket 连接而保持实例存活，会话期间不被 idle 回收；
- * - ws 关闭后 createWsIO 置 eof、会话自然结束，实例释放。
- *
- * 部署（dashboard 手动路线 B）：
- * - Settings → Bindings → Durable Objects：Add binding
- *   variable name = PROXY_DO，class name = ProxySessionDO
- * - 同页添加 migration：new_sqlite_classes 加入 ProxySessionDO
- * - 保存后粘贴构建产物 _worker.js（入口已 re-export 本 class）
+ * - 关键：DO 内 WS 消息必须通过 Hibernation API 的 webSocketMessage 类方法接收，
+ *   平台不会把事件投递给 addEventListener（官方文档明确：
+ *   "The WebSocket Hibernation API takes the place of the standard WebSockets API.
+ *   ws.addEventListener method will not receive events as they will instead be
+ *   delivered to the Durable Object"）。
+ *   webSocketMessage 将归一化字节注入会话 io 队列（feed），供 io.read 消费；
+ * - processProxySession 作为后台任务持续运行（io.read 挂起等帧），
+ *   出站 TCP/UDP 转发与流量统计逻辑与 Worker 内路径完全一致；
+ * - webSocketClose / webSocketError 置 io EOF，会话自然结束，实例释放。
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -30,6 +30,7 @@ export class ProxySessionDO {
 	constructor(state, env) {
 		this.state = state;
 		this.env = env;
+		this.io = null;
 	}
 
 	/**
@@ -55,11 +56,48 @@ export class ProxySessionDO {
 
 		// acceptWebSocket 同步返回后、会话启动前注入 early data（若有）
 		const earlyData = extractEarlyData(request, log);
-		processProxySession(config, this.env, log, createWsIO(server, log, earlyData)).catch((e) => {
+		this.io = createWsIO(server, log, earlyData);
+		processProxySession(config, this.env, log, this.io).catch((e) => {
 			log(`ws session error: ${e.message || e}`);
+			// [DIAG] 记录会话异常到 D1（验证后移除）
+			try {
+				const msg = String((e && e.stack) || e).slice(0, 400);
+				this.env.DB.prepare('INSERT INTO diag_log (ts, tag, result) VALUES (?, ?, ?)').bind(Date.now(), 'session_error', msg).run();
+			} catch (err) { /* ignore */ }
 			safeCloseWebSocket(server);
 		});
 
 		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	/**
+	 * Hibernation API：客户端 WS 消息统一在此接收并注入 io 队列
+	 * （DO 中 addEventListener('message') 不生效，平台只投递本方法）
+	 */
+	async webSocketMessage(ws, message) {
+		if (!this.io) return;
+		let bytes = null;
+		if (message instanceof ArrayBuffer) {
+			bytes = new Uint8Array(message);
+		} else if (ArrayBuffer.isView(message)) {
+			bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+		} else if (typeof message === 'string') {
+			bytes = new TextEncoder().encode(message);
+		}
+		if (!bytes || bytes.byteLength === 0) return;
+		console.log(`[ws-do] webSocketMessage fired, len=${bytes.byteLength}`);
+		this.io.feed(bytes);
+	}
+
+	/** Hibernation API：连接关闭 → io EOF */
+	async webSocketClose(ws, code, reason, wasClean) {
+		console.log(`[ws-do] webSocketClose code=${code} wasClean=${wasClean}`);
+		if (this.io) this.io.signalClose();
+	}
+
+	/** Hibernation API：连接异常 → io EOF */
+	async webSocketError(ws, error) {
+		console.log(`[ws-do] webSocketError ${(error && error.message) || error}`);
+		if (this.io) this.io.signalClose();
 	}
 }

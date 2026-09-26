@@ -17,14 +17,20 @@ const dohCache = new Map(); // hostname -> { ip, ts }
  * @param {string} hostname
  * @param {Function} log
  */
-async function resolveViaDoH(hostname, log) {
+export async function resolveViaDoH(hostname, log) {
 	const hit = dohCache.get(hostname);
 	if (hit && Date.now() - hit.ts < DOH_CACHE_TTL) {
 		log(`doh cache ${hostname} -> ${hit.ip}`);
 		return hit.ip;
 	}
-	// 仅用 Google，且 https://IP 形式（8.8.8.8 / 8.8.4.4 证书含 IP SAN，可直连 TLS）
-	const endpoints = ['https://8.8.8.8/resolve', 'https://8.8.4.4/resolve'];
+	// 多源 DoH：优先域名型（Worker 环境 fetch IP 型可能不可达），Google IP 型兜底
+	const endpoints = [
+		'https://cloudflare-dns.com/dns-query',
+		'https://dns.alidns.com/resolve',
+		'https://doh.pub/resolve',
+		'https://8.8.8.8/resolve',
+		'https://8.8.4.4/resolve',
+	];
 	let resolved = null;
 	for (const endpoint of endpoints) {
 		const ac = new AbortController();
@@ -271,7 +277,18 @@ async function directConnect(config, hostname, port, initialData, log) {
 	const cfDomain = !isIpLiteral && isCloudflareDomain(hostname);
 	const cfIpLiteral = isIpLiteral && !hostname.includes(':') && isCloudflareIp(hostname);
 
-	if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral)) {
+	// 未知域名（ip.sb / ip.skk.moe 等开 CF CDN 的站点）：DoH 预解析 IP 落 CF 地址段 → 同样按 CF 站点走 proxyip，
+	// 避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）；DoH 结果有 300s 缓存
+	let cfResolvedDomain = false;
+	if (proxyipEnabled && !proxyipDown && !isIpLiteral && !cfDomain) {
+		const ip = await resolveViaDoH(hostname, log);
+		if (ip && isCloudflareIp(ip)) {
+			cfResolvedDomain = true;
+			log(`doh cf-detect ${hostname} -> ${ip} (cloudflare ip, use proxyip)`);
+		}
+	}
+
+	if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral || cfResolvedDomain)) {
 		// 出站名模式：CF 目标走指定出站代理（vless/socks5/http），失败降级直连
 		const proxyOb = proxyipOutboundOb(config);
 		if (proxyOb) {
@@ -279,7 +296,7 @@ async function directConnect(config, hostname, port, initialData, log) {
 			if (out) return out;
 			markProxyIpDown(log);
 			log(`proxyip outbound ${proxyOb.name} failed; degrade to direct ${hostname}:${port}`);
-			return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain, initialData, log);
+			return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain || cfResolvedDomain, initialData, log);
 		}
 		const proxyHost = config.proxyipHost;
 		const proxyPort = Number(config.proxyipPort || 443);
@@ -289,7 +306,7 @@ async function directConnect(config, hostname, port, initialData, log) {
 			// proxyip 失败：标记 down 并降级直连目标 hostname/IP
 			markProxyIpDown(log);
 			log(`proxyip ${proxyHost}:${proxyPort} connect failed; degrade to direct ${hostname}:${port}`);
-			return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain, initialData, log);
+			return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain || cfResolvedDomain, initialData, log);
 		}
 		const out = await writeInitial(socket, initialData, log);
 		if (out) directRouteMeta.set(out, { usedProxyIp: true });
@@ -297,7 +314,7 @@ async function directConnect(config, hostname, port, initialData, log) {
 	}
 
 	// 直连路径（非 CF 目标 / proxyip 未启用 / proxyip down 降级）
-	return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain, initialData, log);
+	return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain || cfResolvedDomain, initialData, log);
 }
 
 /**

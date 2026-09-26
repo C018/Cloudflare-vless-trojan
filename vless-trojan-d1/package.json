@@ -15,5 +15,8 @@
     "esbuild": "^0.24.0",
     "javascript-obfuscator": "^4.1.1",
     "wrangler": "^3.90.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   }
 }

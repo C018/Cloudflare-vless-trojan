@@ -138,9 +138,28 @@ export function createWsIO(ws, log, earlyData = null) {
 			if (ws.readyState === 1) {
 				try { ws.send(data); } catch (e) { /* ignore */ }
 			}
+			// 必须返回 Promise：调用方存在 io.write(...).catch() 链，
+			// 无返回值会抛 "Cannot read properties of undefined (reading 'catch')"
+			return Promise.resolve();
 		},
 		close() {
 			safeCloseWebSocket(ws);
+		},
+		/**
+		 * Hibernation API 注入：DO 内 addEventListener('message') 不生效，
+		 * webSocketMessage 类方法收到的帧必须经此进入读取队列。
+		 */
+		feed(bytes) {
+			if (!bytes || bytes.byteLength === 0) return;
+			const waiter = waiters.shift();
+			if (waiter) waiter(bytes);
+			else queue.push(bytes);
+		},
+		/**
+		 * Hibernation API 注入：webSocketClose / webSocketError 时置 EOF。
+		 */
+		signalClose() {
+			onClose();
 		}
 	};
 }
