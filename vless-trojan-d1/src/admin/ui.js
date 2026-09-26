@@ -7,7 +7,7 @@ export function buildAdminUI(tempPassword) {
 	// 后台 UI 为静态 SPA：tempPassword 为空时（已设管理密码）缓存生成结果，避免每次请求重复拼接 55KB HTML
 	if (!tempPassword && adminUiCache) return adminUiCache;
 	const initPwdHtml = tempPassword
-		? `<p style="margin:-8px 0 16px;padding:10px 12px;background:#e8f8ef;color:#1d7a3f;border-radius:10px;font-size:13px">首次部署初始密码：<b>${tempPassword}</b><br>登录后请及时修改</p>`
+		? `<p style="margin:-8px 0 16px;padding:10px 12px;background:var(--ok-bg);color:var(--ok-text);border-radius:10px;font-size:13px">首次部署初始密码：<b>${tempPassword}</b><br>登录后请及时修改</p>`
 		: '';
 	const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -16,14 +16,22 @@ export function buildAdminUI(tempPassword) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>节点管理后台</title>
 <style>
-  :root { --bg:#f2f2f7; --card:#fff; --text:#1c1c1e; --muted:#8e8e93; --accent:#0a84ff; --danger:#ff3b30; --border:rgba(60,60,67,.12); }
+  :root { --bg:#f2f2f7; --card:#fff; --text:#1c1c1e; --muted:#8e8e93; --accent:#0a84ff; --danger:#ff3b30; --border:rgba(60,60,67,.12);
+  --input-bg:#fafafa; --info-bg:#f0f4ff; --info-text:#2b5db3; --ok-bg:#e8f8ef; --ok-text:#1d7a3f;
+  --badge-info:#e9f5ff; --badge-on-bg:#e8f8ef; --badge-on-text:#34c759; --badge-off:#f2f2f7;
+  --dot-idle:#d1d1d6; --logo-bg:#e9e9ee; --skeleton-a:#f2f2f7; --skeleton-b:#e4e4ea; --mask:rgba(0,0,0,.4); --entry-card:#fff; }
+:root[data-theme="dark"] { color-scheme: dark;
+  --bg:#000; --card:#1c1c1e; --text:#f2f2f7; --muted:#98989e; --accent:#0a84ff; --danger:#ff453a; --border:rgba(255,255,255,.14);
+  --input-bg:#2c2c2e; --info-bg:rgba(10,132,255,.16); --info-text:#64b0ff; --ok-bg:rgba(52,199,89,.16); --ok-text:#3ddc68;
+  --badge-info:rgba(10,132,255,.18); --badge-on-bg:rgba(52,199,89,.18); --badge-on-text:#30d158; --badge-off:#2c2c2e;
+  --dot-idle:#48484a; --logo-bg:#3a3a3c; --skeleton-a:#2c2c2e; --skeleton-b:#3a3a3c; --mask:rgba(0,0,0,.6); --entry-card:#1c1c1e; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
   .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; }
   .login-card { background:var(--card); border-radius:24px; padding:40px; width:340px; box-shadow:0 4px 24px rgba(0,0,0,.08); text-align:center; }
   .login-card h1 { font-size:24px; font-weight:700; margin-bottom:8px; }
   .login-card p { color:var(--muted); font-size:14px; margin-bottom:24px; }
-  .login-card input { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:12px; font-size:15px; margin-bottom:16px; background:#fafafa; }
+  .login-card input { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:12px; font-size:15px; margin-bottom:16px; background:var(--input-bg); }
   .btn { background:var(--accent); color:#fff; border:0; border-radius:12px; padding:12px; font-size:15px; font-weight:600; cursor:pointer; width:100%; }
   .btn:disabled { opacity:.5; }
   .btn.danger { background:var(--danger); }
@@ -40,17 +48,17 @@ export function buildAdminUI(tempPassword) {
   th { text-align:left; color:var(--muted); font-weight:600; font-size:12px; padding:8px 10px; border-bottom:1px solid var(--border); }
   td { padding:10px; border-bottom:1px solid var(--border); vertical-align:middle; }
   tr:last-child td { border-bottom:0; }
-  .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; background:#e9f5ff; color:var(--accent); }
-  .badge.off { background:#f2f2f7; color:var(--muted); }
-  .badge.on { background:#e8f8ef; color:#34c759; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; background:var(--badge-info); color:var(--accent); }
+  .badge.off { background:var(--badge-off); color:var(--muted); }
+  .badge.on { background:var(--badge-on-bg); color:var(--badge-on-text); }
   .toolbar { display:flex; gap:8px; margin-bottom:16px; }
   .toolbar .btn { width:auto; padding:8px 16px; }
-  .modal-mask { position:fixed; inset:0; background:rgba(0,0,0,.4); display:none; align-items:center; justify-content:center; z-index:50; }
+  .modal-mask { position:fixed; inset:0; background:var(--mask); display:none; align-items:center; justify-content:center; z-index:50; }
   .modal-mask.show { display:flex; }
   .modal { background:var(--card); border-radius:20px; padding:24px; width:480px; max-width:92vw; max-height:80vh; overflow:auto; }
   .modal h3 { font-size:18px; margin-bottom:16px; }
   .modal label { display:block; font-size:13px; color:var(--muted); margin:12px 0 6px; }
-  .modal input, .modal select, .modal textarea { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font-size:14px; background:#fafafa; }
+  .modal input, .modal select, .modal textarea { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:10px; font-size:14px; background:var(--input-bg); }
   .modal textarea { min-height:60px; font-family:ui-monospace,Menlo,monospace; }
   .modal .actions { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; }
   .modal .actions .btn { width:auto; padding:10px 20px; }
@@ -70,13 +78,13 @@ export function buildAdminUI(tempPassword) {
   .net-latency .unit { font-size:13px; color:var(--muted); font-weight:400; margin-left:3px; }
   .net-latency.fail { font-size:16px; color:var(--muted); line-height:30px; }
   .net-dots { display:flex; gap:4px; flex-wrap:nowrap; }
-  .net-dot { width:12px; height:12px; border-radius:50%; background:#d1d1d6; flex:none; }
+  .net-dot { width:12px; height:12px; border-radius:50%; background:var(--dot-idle); flex:none; }
   .net-dot.ok { background:#34c759; }
   .net-dot.warn { background:#ffcc00; }
   .net-dot.bad { background:#ff9500; }
   .net-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:12px; color:var(--muted); }
   /* ---- Geo 更新进度弹框 ---- */
-  .geo-modal { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:60; }
+  .geo-modal { position:fixed; inset:0; background:var(--mask); display:none; align-items:center; justify-content:center; z-index:60; }
   .geo-modal.show { display:flex; }
   .geo-box { background:var(--card); border-radius:20px; padding:24px 26px; width:430px; max-width:92vw; box-shadow:0 8px 32px rgba(0,0,0,.18); }
   .geo-box h3 { font-size:17px; margin-bottom:6px; }
@@ -88,7 +96,7 @@ export function buildAdminUI(tempPassword) {
   .geo-actions { display:flex; gap:8px; margin-top:16px; justify-content:flex-end; }
   .geo-actions .btn { width:auto; padding:8px 16px; }
   .geo-done { display:block; font-size:13px; padding:8px 12px; border-radius:10px; margin-bottom:8px; }
-  .geo-done.ok { background:#e8f8ef; color:#1d7a3f; }
+  .geo-done.ok { background:var(--ok-bg); color:var(--ok-text); }
   .geo-done.err { background:#ffeceb; color:#d70015; }
   /* ---- 网络状态：ip.skk.moe 风格动态探测 ---- */
   .colo-bar { display:flex; gap:18px; align-items:center; flex-wrap:wrap; background:var(--card); border-radius:14px; padding:12px 16px; margin-bottom:14px; font-size:13px; box-shadow:0 1px 4px rgba(0,0,0,.04); }
@@ -106,7 +114,7 @@ export function buildAdminUI(tempPassword) {
   .net-card.bad-state::before { background:#ff3b30; }
   @keyframes netIn { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:none; } }
   .net-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-  .net-logo { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:18px; background:#e9e9ee; color:#fff; flex:none; box-shadow:0 2px 6px rgba(0,0,0,.14); }
+  .net-logo { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:18px; background:var(--logo-bg); color:#fff; flex:none; box-shadow:0 2px 6px rgba(0,0,0,.14); }
   .net-name { font-size:15px; font-weight:700; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .net-status-line { display:flex; align-items:center; gap:10px; margin-bottom:4px; }
   .net-pulse { width:10px; height:10px; border-radius:50%; background:#9aa0a6; flex:none; }
@@ -125,7 +133,7 @@ export function buildAdminUI(tempPassword) {
   .net-dot.warn { background:#ffcc00; }
   .net-dot.bad { background:#ff9500; }
   /* 探测中动效：骨架扫描 */
-  .net-latency.scan, .net-meta.scan { background:linear-gradient(90deg,#f2f2f7 25%,#e4e4ea 37%,#f2f2f7 63%); background-size:400% 100%; animation:scanMove 1.2s ease infinite; border-radius:6px; }
+  .net-latency.scan, .net-meta.scan { background:linear-gradient(90deg,var(--skeleton-a) 25%,var(--skeleton-b) 37%,var(--skeleton-a) 63%); background-size:400% 100%; animation:scanMove 1.2s ease infinite; border-radius:6px; }
   .net-latency.scan { width:55%; height:30px; }
   .net-meta.scan { width:70%; height:14px; }
   @keyframes scanMove { 0% { background-position:100% 0; } 100% { background-position:-100% 0; } }
@@ -165,7 +173,11 @@ export function buildAdminUI(tempPassword) {
     table { min-width:620px; }
     .net-grid { grid-template-columns:1fr; }
   }
+.theme-seg { display:flex; background:var(--bg); border-radius:10px; padding:3px; gap:2px; }
+.seg-item { flex:1; text-align:center; padding:8px 0; border-radius:8px; font-size:13px; color:var(--muted); cursor:pointer; transition:background .2s ease,color .2s ease; -webkit-tap-highlight-color:transparent; }
+.seg-item.on { background:var(--card); color:var(--text); font-weight:600; box-shadow:0 1px 4px rgba(0,0,0,.08); }
 </style>
+<script>try{var m=localStorage.getItem('themeMode')||'system',d=m==='dark'||(m==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light';}catch(e){}</script>
 </head>
 <body>
 <div class="login-wrap" id="loginWrap">
@@ -279,6 +291,13 @@ document.querySelectorAll('.nav-item[data-tab]').forEach(el=>el.onclick=()=>swit
 $('#loginBtn').onclick = doLogin;
 $('#loginPwd').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 $('#logoutBtn').onclick = doLogout;
+// 夜间模式：默认跟随系统，可手动切换（localStorage.themeMode: system/light/dark）
+function sysDark(){ return matchMedia('(prefers-color-scheme: dark)').matches; }
+function currentTheme(){ const m = localStorage.getItem('themeMode') || 'system'; return m==='system' ? (sysDark()?'dark':'light') : m; }
+function applyTheme(){ document.documentElement.dataset.theme = currentTheme(); }
+function renderThemeSeg(){ const m = localStorage.getItem('themeMode') || 'system'; document.querySelectorAll('#themeSeg .seg-item').forEach(el=>{ el.classList.toggle('on', el.dataset.t===m); el.onclick = ()=>setTheme(el.dataset.t); }); }
+function setTheme(mode){ localStorage.setItem('themeMode', mode); applyTheme(); renderThemeSeg(); toast(mode==='system'?'已跟随系统外观':(mode==='dark'?'已切换深色模式':'已切换浅色模式')); }
+(function(){ try{ if (matchMedia('(prefers-color-scheme: dark)').addEventListener) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme); }catch(e){} })();
 
 async function switchTab(tab){
   state.tab = tab;
@@ -299,7 +318,7 @@ async function switchTab(tab){
 const ROUTE_TEST_CARD = '<div class="card" id="routeTestCard" style="margin-top:16px">'+
   '<h3 style="font-size:15px;margin-bottom:8px">🧭 路由测试</h3>'+
   '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">输入域名或 IP，按当前配置（路由规则 → 默认出站 → proxyip）判定真实路由走向。direct 绿 / proxyip 蓝 / outbound 橙 / reject 红。</div>'+
-  '<div style="display:flex;gap:8px"><input id="routeTestDomain" placeholder="例如 www.google.com / 1.1.1.1" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:#fafafa"><button class="btn small" onclick="runRouteTest()">测试</button></div>'+
+  '<div style="display:flex;gap:8px"><input id="routeTestDomain" placeholder="例如 www.google.com / 1.1.1.1" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:var(--input-bg)"><button class="btn small" onclick="runRouteTest()">测试</button></div>'+
   '<div id="routeTestResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
 
 // 路由测试输入框回车触发（事件委托，避免模板字符串内嵌 onkeydown 引号转义问题）
@@ -507,15 +526,24 @@ async function loadSettings(){
       ['disguise_subtitle','伪装页副标题'],
     ];
     mc.innerHTML = '<div class="page-title">系统设置</div>'+
-      '<div class="card" style="display:flex;align-items:center;justify-content:space-between;background:#f0f4ff;color:#2b5db3;font-size:13px;border-radius:10px;padding:10px 16px;margin-bottom:16px">'+
+      '<div class="card" style="margin-bottom:16px">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><span style="font-size:14px;font-weight:600">外观</span><span style="font-size:12px;color:var(--muted)">默认跟随系统</span></div>'+
+        '<div class="theme-seg" id="themeSeg">'+
+          '<span class="seg-item" data-t="system">跟随系统</span>'+
+          '<span class="seg-item" data-t="light">浅色</span>'+
+          '<span class="seg-item" data-t="dark">深色</span>'+
+        '</div>'+
+      '</div>'+
+      '<div class="card" style="display:flex;align-items:center;justify-content:space-between;background:var(--info-bg);color:var(--info-text);font-size:13px;border-radius:10px;padding:10px 16px;margin-bottom:16px">'+
         '<span>系统版本</span><b id="sysVersion">'+(ver.version?esc(ver.version):'未知')+'</b>'+
       '</div>'+
-      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
+      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
       '<div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
       '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="updateGeo()">更新 Geo 规则库</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
       '<div id="testResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
     state.settings = s;
+    renderThemeSeg();
   } catch(e){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载失败: '+esc(e.message)+'</div>'; }
 }
 
@@ -534,7 +562,7 @@ function ensureEntryStyle(){
   const st = document.createElement('style');
   st.id = 'entryStyle';
   st.textContent =
-    '.entry-card{background:#fff;border:1px solid var(--border,#e6e8ee);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:box-shadow .25s ease,border-color .25s ease}' +
+    '.entry-card{background:var(--entry-card);border:1px solid var(--border,#e6e8ee);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:box-shadow .25s ease,border-color .25s ease}' +
     '.entry-card:focus-within{box-shadow:0 4px 16px rgba(10,132,255,.10);border-color:rgba(10,132,255,.35)}' +
     '.entry-card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}' +
     '.entry-badge{width:24px;height:24px;border-radius:50%;background:var(--primary,#0a84ff);color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none}' +
@@ -544,7 +572,7 @@ function ensureEntryStyle(){
     '@media (max-width:560px){.entry-grid{grid-template-columns:1fr}}' +
     '.entry-field label{display:block;font-size:12px;color:var(--muted,#8a94a6);margin-bottom:5px;font-weight:500}' +
     '.entry-field input{width:100%;padding:9px 12px;border:1px solid var(--border,#e6e8ee);border-radius:10px;background:#f7f8fa;font-size:14px;color:var(--text,#1d1d1f);outline:none;transition:all .2s ease;box-sizing:border-box}' +
-    '.entry-field input:focus{background:#fff;border-color:var(--primary,#0a84ff);box-shadow:0 0 0 3px rgba(10,132,255,.12)}' +
+    '.entry-field input:focus{background:var(--card);border-color:var(--primary,#0a84ff);box-shadow:0 0 0 3px rgba(10,132,255,.12)}' +
     '.entry-chips{display:flex;gap:8px;flex-wrap:wrap;padding-top:2px}' +
     '.entry-chip{display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;border:1px solid var(--border,#e6e8ee);background:#f2f3f7;color:#6b7280;font-size:13px;font-weight:500;cursor:pointer;transition:all .2s ease;user-select:none}' +
     '.entry-chip input{display:none}' +
@@ -621,7 +649,7 @@ async function loadEntry(){
     if (!list.length) list = [{ host: '', port: '', sni: '', wsHost: '', remark: '', transports: [] }];
     ensureEntryStyle();
     mc.innerHTML = '<div class="page-title">入口设置</div>' +
-      '<div class="card" style="background:#e8f8ef;color:#1d7a3f;font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（ws/grpc/h2 全协议）。</div>' +
+      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（ws/grpc/h2 全协议）。</div>' +
       '<div id="entryCards">' + list.map(entryCardHtml).join('') + '</div>' +
       '<div class="entry-actions"><button class="btn small" onclick="addEntry()">+ 添加入口</button>' +
       '<button id="saveEntryBtn" class="btn small entry-save" onclick="saveEntry()" disabled>保存入口设置</button></div>';
