@@ -14,6 +14,9 @@
 import { processProxySession } from './proxy-session.js';
 import { safeCloseWebSocket, base64ToArrayBuffer } from '../outbound/stream.js';
 
+// write() 必须返回 Promise（调用方存在 .catch 链）；复用同一 resolved Promise 避免每帧分配
+const RESOLVED = Promise.resolve();
+
 /**
  * 将 ws 消息统一归一化为 Uint8Array（支持 ArrayBuffer / 视图 / 文本帧 / 跨 realm ArrayBuffer）
  * Blob 需异步转换，由调用方先 await arrayBuffer() 再传入。
@@ -141,9 +144,9 @@ export function createWsIO(ws, log, earlyData = null) {
 			if (ws.readyState === 1) {
 				try { ws.send(data); } catch (e) { /* ignore */ }
 			}
-			// 必须返回 Promise：调用方存在 io.write(...).catch() 链，
+			// 复用共享 resolved Promise：调用方存在 io.write(...).catch() 链，
 			// 无返回值会抛 "Cannot read properties of undefined (reading 'catch')"
-			return Promise.resolve();
+			return RESOLVED;
 		},
 		close() {
 			safeCloseWebSocket(ws);

@@ -15,18 +15,16 @@ function bytesToUuid(bytes) {
  * 解析 VLESS 入站头
  * @param {ArrayBuffer} protocolBuffer
  * @param {Set<string>} uuidSet 有效 uuid 集合
- * @returns {{hasError:boolean,message?:string,userUuid?:string,addressRemote?:string,addressType?:number,portRemote?:number,rawDataIndex?:number,protocolVersion?:Uint8Array,isUDP?:boolean}}
+ * @returns {{hasError:boolean,message?:string,userUuid?:string,addressRemote?:string,addressType?:number,portRemote?:number,rawDataIndex?:number,isUDP?:boolean}}
  */
 export function processVlessHeader(protocolBuffer, uuidSet) {
 	if (protocolBuffer.byteLength < 24) {
 		return { hasError: true, message: 'invalid data' };
 	}
-	// createWsIO 归一化为 Uint8Array，需取其底层 buffer 构造 DataView
-	const dataView = protocolBuffer instanceof Uint8Array
-		? new DataView(protocolBuffer.buffer, protocolBuffer.byteOffset, protocolBuffer.byteLength)
-		: new DataView(protocolBuffer);
-	const version = dataView.getUint8(0);
-	const uuid = bytesToUuid(new Uint8Array(protocolBuffer.slice(1, 17)));
+	// createWsIO 归一化为 Uint8Array；统一视图后 subarray 零拷贝读取
+	const view = protocolBuffer instanceof Uint8Array ? protocolBuffer : new Uint8Array(protocolBuffer);
+	const dataView = new DataView(view.buffer, view.byteOffset, view.byteLength);
+	const uuid = bytesToUuid(view.subarray(1, 17));
 
 	if (!uuidSet.has(uuid)) {
 		return { hasError: true, message: 'invalid user' };
@@ -51,7 +49,7 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 		case 1: // IPv4
 			addressLength = 4;
 			addressValueIndex = portIndex + 3;
-			addressValue = Array.from(new Uint8Array(protocolBuffer.slice(addressValueIndex, addressValueIndex + addressLength))).join('.');
+			addressValue = `${dataView.getUint8(addressValueIndex)}.${dataView.getUint8(addressValueIndex + 1)}.${dataView.getUint8(addressValueIndex + 2)}.${dataView.getUint8(addressValueIndex + 3)}`;
 			break;
 		case 2: // Domain
 			if (protocolBuffer.byteLength < portIndex + 4) {
@@ -59,12 +57,12 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 			}
 			addressLength = dataView.getUint8(portIndex + 3);
 			addressValueIndex = portIndex + 4;
-			addressValue = new TextDecoder().decode(protocolBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+			addressValue = new TextDecoder().decode(view.subarray(addressValueIndex, addressValueIndex + addressLength));
 			break;
 		case 3: // IPv6
 			addressLength = 16;
 			addressValueIndex = portIndex + 3;
-			addressValue = Array.from({ length: 8 }, (_, i) => dataView.getUint16(addressValueIndex + i * 2).toString(16)).join(':');
+			addressValue = `${dataView.getUint16(addressValueIndex).toString(16)}:${dataView.getUint16(addressValueIndex + 2).toString(16)}:${dataView.getUint16(addressValueIndex + 4).toString(16)}:${dataView.getUint16(addressValueIndex + 6).toString(16)}:${dataView.getUint16(addressValueIndex + 8).toString(16)}:${dataView.getUint16(addressValueIndex + 10).toString(16)}:${dataView.getUint16(addressValueIndex + 12).toString(16)}:${dataView.getUint16(addressValueIndex + 14).toString(16)}`;
 			break;
 		default:
 			return { hasError: true, message: `invalid addressType: ${addressType}` };
@@ -81,7 +79,6 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 		addressType,
 		portRemote,
 		rawDataIndex: addressValueIndex + addressLength,
-		protocolVersion: new Uint8Array([version]),
 		isUDP: command === 2
 	};
 }

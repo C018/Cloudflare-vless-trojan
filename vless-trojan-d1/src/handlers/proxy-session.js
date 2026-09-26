@@ -13,6 +13,9 @@ import { handleTcpOutbound, resolveOutbound, directRouteMeta, connectViaProxyIp,
 import { vlessOutboundConnect } from '../outbound/vless.js';
 import { decideRoute } from '../routing/engine.js';
 
+// VLESS 空包帧（0x00 0x00）：服务端握手响应头与心跳保活帧内容相同，复用同一常量避免每连接/每心跳分配
+const VLESS_EMPTY_FRAME = new Uint8Array([0x00, 0x00]);
+
 /**
  * 处理一次代理会话（io 已就绪）
  * @param {Object} config
@@ -62,7 +65,7 @@ export async function processProxySession(config, env, log, io) {
 		// VLESS 服务端握手响应头（version=0, addonLen=0）：xray 等客户端依赖此 2 字节
 		// 定位后续响应流，缺失会导致客户端把业务数据前 2 字节误当响应头剥离，
 		// 表现为节点能握手成功但实际无法上网（数据错位/连接异常）。
-		try { await io.write(new Uint8Array([0x00, 0x00])); } catch (e) { /* ignore */ }
+		try { await io.write(VLESS_EMPTY_FRAME); } catch (e) { /* ignore */ }
 		userRecord = config.vlessIndex[headerResult.userUuid] || null;
 	}
 
@@ -82,7 +85,11 @@ export async function processProxySession(config, env, log, io) {
 	}
 
 	const { addressType, addressRemote, portRemote, isUDP } = headerResult;
-	const firstPayload = new Uint8Array(protocolBuffer.slice(headerResult.rawDataIndex));
+	// 首包零拷贝：subarray 视图直接复用协议头 buffer（原 slice 每连接复制一次 payload）
+	const firstPayload = (protocolBuffer instanceof Uint8Array
+		? protocolBuffer
+		: new Uint8Array(protocolBuffer)
+	).subarray(headerResult.rawDataIndex);
 
 	let route;
 	try {
@@ -138,7 +145,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		if (closed) return;
 		if (Date.now() - lastActivity >= HEARTBEAT_INTERVAL) {
 			lastActivity = Date.now();
-			io.write(new Uint8Array([0x00, 0x00])).catch(() => { /* ignore */ });
+			io.write(VLESS_EMPTY_FRAME).catch(() => { /* ignore */ });
 		}
 	}, 5000);
 	// 直连首包等待超时（对齐 Vless_workers_pages：直连无数据 → retry proxyip）
@@ -203,38 +210,47 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		let reader = remoteSocket.readable.getReader();
 		let gotFirst = false;
 		while (true) {
-			let result;
 			if (!gotFirst && !fallbackDone) {
+				// 首包竞态：直连无数据 → 超时换路（仅首个下行包前需要，避免拖长首字节延迟）
 				let timer = null;
 				const readPromise = reader.read().then((r) => ({ tag: 'read', ...r }));
 				const timerPromise = new Promise((res) => {
 					timer = setTimeout(() => res({ tag: 'timeout' }), DIRECT_FIRST_PACKET_TIMEOUT);
 				});
-				result = await Promise.race([readPromise, timerPromise]);
+				const result = await Promise.race([readPromise, timerPromise]);
 				clearTimeout(timer);
-			} else {
-				result = { tag: 'read', ...(await reader.read()) };
-			}
 
-			if (result.tag === 'timeout') {
-				// 不在此打日志：tryFallback 内部已按降级/换路路径记录（避免与 no first packet 重复刷屏）
-				const fb = await tryFallback();
-				if (!fb) break;
-				try { writer.releaseLock(); } catch (e) { /* ignore */ }
-				remoteSocket = fb;
-				writer = remoteSocket.writable.getWriter();
-				routeMeta = directRouteMeta.get(remoteSocket) || null;
-				reader = remoteSocket.readable.getReader();
-				gotFirst = false;
+				if (result.tag === 'timeout') {
+					// 不在此打日志：tryFallback 内部已按降级/换路路径记录（避免与 no first packet 重复刷屏）
+					const fb = await tryFallback();
+					if (!fb) break;
+					try { writer.releaseLock(); } catch (e) { /* ignore */ }
+					remoteSocket = fb;
+					writer = remoteSocket.writable.getWriter();
+					routeMeta = directRouteMeta.get(remoteSocket) || null;
+					reader = remoteSocket.readable.getReader();
+					gotFirst = false;
+					continue;
+				}
+
+				if (result.done) break;
+				if (result.value && result.value.byteLength > 0) {
+					gotFirst = true;
+					downBytes += result.value.byteLength;
+					lastActivity = Date.now();
+					await io.write(result.value);
+				}
 				continue;
 			}
 
-			if (result.done) break;
-			if (result.value && result.value.byteLength > 0) {
+			// 首包竞态结束后：普通下行循环（直读解构，避免每帧构造 {tag:'read',...} 对象 + spread 分配）
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value && value.byteLength > 0) {
 				gotFirst = true;
-				downBytes += result.value.byteLength;
+				downBytes += value.byteLength;
 				lastActivity = Date.now();
-				await io.write(result.value);
+				await io.write(value);
 			}
 		}
 	} catch (e) {

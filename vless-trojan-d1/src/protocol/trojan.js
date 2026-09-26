@@ -16,11 +16,15 @@ export async function sha224Hex(str) {
 
 /** 同步版 sha224 十六进制（Worker 无同步 SHA-224，这里用缓存方案） */
 const sha224Cache = new Map();
+/** 反向索引：sha224 hex -> 明文密码。任一密码首次计算后回填，后续连接 O(1) 命中，免去多密码循环比对 */
+const sha224Reverse = new Map();
 export function sha224Sync(str) {
 	if (sha224Cache.has(str)) return sha224Cache.get(str);
 	// 返回 promise 包装结果，调用方需 await
 	const p = sha224Hex(str);
 	sha224Cache.set(str, p);
+	// 计算结果回填反向索引（异步，不阻塞调用方）
+	p.then((h) => { if (h) sha224Reverse.set(h, str); }).catch(() => { /* ignore */ });
 	return p;
 }
 
@@ -56,14 +60,20 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 		return { hasError: true, message: 'Invalid Trojan header: missing CRLF' };
 	}
 
-	const receivedHash = new TextDecoder().decode(bytes.slice(0, 56));
+	const receivedHash = new TextDecoder().decode(bytes.subarray(0, 56));
 	let matchedPassword = null;
-	// 多密码：逐一比对 sha224
-	for (const password of passwordSet) {
-		try {
-			const h = await sha224Sync(password);
-			if (h === receivedHash) { matchedPassword = password; break; }
-		} catch (e) { /* ignore */ }
+	// 先查反向索引（O(1)）：同一 hash 已被任一密码回填时直接命中，免去多密码循环比对
+	const reverseHit = sha224Reverse.get(receivedHash);
+	if (reverseHit !== undefined) {
+		matchedPassword = reverseHit;
+	} else {
+		// 多密码：逐一比对 sha224（首次连接回填反向索引，后续连接走 O(1) 命中）
+		for (const password of passwordSet) {
+			try {
+				const h = await sha224Sync(password);
+				if (h === receivedHash) { matchedPassword = password; break; }
+			} catch (e) { /* ignore */ }
+		}
 	}
 	if (!matchedPassword) {
 		return { hasError: true, message: 'Invalid Trojan password' };
@@ -84,7 +94,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 			if (protocolBuffer.byteLength < addressValueIndex + addressLength + 2) {
 				return { hasError: true, message: 'Invalid Trojan header: IPv4 truncated' };
 			}
-			addressValue = Array.from(bytes.slice(addressValueIndex, addressValueIndex + addressLength)).join('.');
+			addressValue = `${dataView.getUint8(addressValueIndex)}.${dataView.getUint8(addressValueIndex + 1)}.${dataView.getUint8(addressValueIndex + 2)}.${dataView.getUint8(addressValueIndex + 3)}`;
 			break;
 		case 3: // Domain
 			addressLength = bytes[60];
@@ -92,7 +102,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 			if (protocolBuffer.byteLength < addressValueIndex + addressLength + 2) {
 				return { hasError: true, message: 'Invalid Trojan header: domain truncated' };
 			}
-			addressValue = new TextDecoder().decode(bytes.slice(addressValueIndex, addressValueIndex + addressLength));
+			addressValue = new TextDecoder().decode(bytes.subarray(addressValueIndex, addressValueIndex + addressLength));
 			break;
 		case 4: // IPv6
 			addressLength = 16;
@@ -100,7 +110,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 			if (protocolBuffer.byteLength < addressValueIndex + addressLength + 2) {
 				return { hasError: true, message: 'Invalid Trojan header: IPv6 truncated' };
 			}
-			addressValue = Array.from({ length: 8 }, (_, i) => dataView.getUint16(addressValueIndex + i * 2).toString(16)).join(':');
+			addressValue = `${dataView.getUint16(addressValueIndex).toString(16)}:${dataView.getUint16(addressValueIndex + 2).toString(16)}:${dataView.getUint16(addressValueIndex + 4).toString(16)}:${dataView.getUint16(addressValueIndex + 6).toString(16)}:${dataView.getUint16(addressValueIndex + 8).toString(16)}:${dataView.getUint16(addressValueIndex + 10).toString(16)}:${dataView.getUint16(addressValueIndex + 12).toString(16)}:${dataView.getUint16(addressValueIndex + 14).toString(16)}`;
 			break;
 		default:
 			return { hasError: true, message: `Invalid Trojan address type: ${addressType}` };

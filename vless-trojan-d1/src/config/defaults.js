@@ -252,7 +252,17 @@ export function parseEntries(settings) {
  */
 export async function createRequestConfig(request, env, options = {}) {
 	const { DB } = env;
-	const settings = await cachedLoad('settings', () => loadSettings(DB));
+	// 5 路缓存并行加载：settings / outbounds / vlessUsers / trojanUsers / routingRules
+	// 相互独立。串行 await 在缓存 miss（30s 一次或后台改动失效后）时叠加 4 次 D1 RTT，
+	// 并行可把首次建连配置加载延迟从 5 段串行收敛为 1 段（省约 40~200ms）；缓存命中路径
+	// 也省去 4 个串行 microtask。
+	const [settings, outbounds, vlessUsers, trojanUsers, routingRules] = await Promise.all([
+		cachedLoad('settings', () => loadSettings(DB)),
+		cachedLoad('outbounds', () => loadOutbounds(DB)),
+		cachedLoad('vlessUsers', () => loadVlessUsers(DB)),
+		cachedLoad('trojanUsers', () => loadTrojanUsers(DB)),
+		cachedLoad('routingRules', () => loadRoutingRules(DB)),
+	]);
 
 	const wsPath = settings.ws_path || DEFAULT_WS_PATH;
 	const entryTransport = settings.entry_transport || INBOUND_TRANSPORT_DEFAULT;
@@ -266,8 +276,6 @@ export async function createRequestConfig(request, env, options = {}) {
 		adminTempPassword = ensured.tempPassword;
 	}
 	const proxyipRaw = settings.proxyip || '';
-	// outbounds 提前加载：proxyip 出站名匹配依赖出站表
-	const outbounds = await cachedLoad('outbounds', () => loadOutbounds(DB));
 	// proxyip：可填 IP 或域名，支持 [host:port] 或裸 host（默认 443），也可直接填出站名（该出站代理出站），
 	// 仅默认出站 direct 时生效
 	let proxyipHost = '';
@@ -296,10 +304,6 @@ export async function createRequestConfig(request, env, options = {}) {
 	const entryPort = entries.length ? entries[0].port : '';
 	const entrySni = entries.length ? entries[0].sni : '';
 	const entryWsHost = entries.length ? entries[0].wsHost : '';
-
-	const vlessUsers = await cachedLoad('vlessUsers', () => loadVlessUsers(DB));
-	const trojanUsers = await cachedLoad('trojanUsers', () => loadTrojanUsers(DB));
-	const routingRules = await cachedLoad('routingRules', () => loadRoutingRules(DB));
 
 	// 到期流量重置（请求级幂等 + 30s 节流：traffic_reset_at 已过期才清零，避免每连接全量扫描）
 	const nowReset = Date.now();
