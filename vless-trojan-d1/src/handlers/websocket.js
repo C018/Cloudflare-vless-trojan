@@ -36,7 +36,7 @@ function normalizeToUint8Array(data) {
  * @param {Function} log
  * @returns {Uint8Array|null}
  */
-function extractEarlyData(request, log) {
+export function extractEarlyData(request, log) {
 	const edParam = new URL(request.url).searchParams.get('ed');
 	let header = request.headers.get('sec-websocket-protocol') || '';
 	if (header) {
@@ -85,7 +85,7 @@ export async function handleWebSocketUpgrade(request, config, env) {
  * @param {Function} log
  * @param {Uint8Array|null} earlyData 首个数据块（early data），先于 ws message 入队
  */
-function createWsIO(ws, log, earlyData = null) {
+export function createWsIO(ws, log, earlyData = null) {
 	const queue = [];
 	const waiters = [];
 	let eof = false;

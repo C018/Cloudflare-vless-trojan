@@ -11,8 +11,9 @@
  */
 
 import { connect } from 'cloudflare:sockets';
-import { createRequestConfig } from './config/defaults.js';
+import { createRequestConfig, composeInboundScope } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
+export { ProxySessionDO } from './durable/session-do.js';
 import { handleH2Inbound, handleGrpcInbound } from './handlers/entry.js';
 import { handleHttp } from './handlers/http.js';
 import { handleAdminApi, runGeoUpdateTask } from './admin/api.js';
@@ -21,24 +22,6 @@ import { handleCron, scheduled } from './cron.js';
 
 // Workers 平台 Socket 建连能力注入：direct / proxyip / socks5 / http 出站均依赖 globalThis.connect
 globalThis.connect = connect;
-
-/**
- * 将路径映射命中的 scope 列表组合为会话校验集合。
- * - 含 all（全局路径）→ 接受全部启用用户
- * - 仅用户自定义路径 → 限定该路径注册的 vless uuid / trojan password
- * @param {Array<{kind:string, credential?:string}>} scopes
- * @returns {{all:boolean, vless:Set<string>, trojan:Set<string>}}
- */
-function composeInboundScope(scopes) {
-	const vless = new Set();
-	const trojan = new Set();
-	for (const s of scopes) {
-		if (s.kind === 'all') return { all: true, vless, trojan };
-		if (s.kind === 'vless' && s.credential) vless.add(s.credential);
-		if (s.kind === 'trojan' && s.credential) trojan.add(s.credential);
-	}
-	return { all: false, vless, trojan };
-}
 
 export default {
 	/**
@@ -77,6 +60,11 @@ export default {
 				const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
 				const isGrpc = path.endsWith('/Tun') || contentType.includes('application/grpc');
 				if (upgrade === 'websocket' && !isGrpc) {
+					// DO 托管长连接会话，突破 30s idle 断连；未配置 DO binding 时回退 Worker 内处理
+					if (env.PROXY_DO) {
+						const doId = env.PROXY_DO.idFromUniqueId(crypto.randomUUID());
+						return await env.PROXY_DO.get(doId).fetch(request);
+					}
 					return await handleWebSocketUpgrade(request, config, env);
 				}
 				if (isGrpc) {

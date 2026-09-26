@@ -362,3 +362,21 @@ export function randomUUID() {
 		return v.toString(16);
 	});
 }
+
+/**
+ * 将路径映射命中的 scope 列表组合为会话校验集合。
+ * - 含 all（全局路径）→ 接受全部启用用户
+ * - 仅用户自定义路径 → 限定该路径注册的 vless uuid / trojan password
+ * @param {Array<{kind:string, credential?:string}>} scopes
+ * @returns {{all:boolean, vless:Set<string>, trojan:Set<string>}}
+ */
+export function composeInboundScope(scopes) {
+	const vless = new Set();
+	const trojan = new Set();
+	for (const s of scopes) {
+		if (s.kind === 'all') return { all: true, vless, trojan };
+		if (s.kind === 'vless' && s.credential) vless.add(s.credential);
+		if (s.kind === 'trojan' && s.credential) trojan.add(s.credential);
+	}
+	return { all: false, vless, trojan };
+}

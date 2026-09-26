@@ -130,6 +130,17 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let upBytes = 0;
 	let downBytes = 0;
 	let closed = false;
+	// VLESS 空包心跳保活：CF Workers 平台约 30s 无数据活动即断开 WebSocket，
+	// 空闲超过阈值时向客户端发空包帧（0x00 0x00），保持连接活跃（xray/sing-box 客户端原生支持空包探测）。
+	const HEARTBEAT_INTERVAL = 15000;
+	let lastActivity = Date.now();
+	const heartbeatTimer = setInterval(() => {
+		if (closed) return;
+		if (Date.now() - lastActivity >= HEARTBEAT_INTERVAL) {
+			lastActivity = Date.now();
+			io.write(new Uint8Array([0x00, 0x00])).catch(() => { /* ignore */ });
+		}
+	}, 5000);
 	// 直连首包等待超时（对齐 Vless_workers_pages：直连无数据 → retry proxyip）
 	const DIRECT_FIRST_PACKET_TIMEOUT = 5000;
 	// 当前 direct 路由元信息：是否已走 proxyip
@@ -179,6 +190,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk === null || chunk === undefined) break;
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
+				lastActivity = Date.now();
 				await writer.write(chunk);
 			}
 		} catch (e) {
@@ -221,6 +233,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			if (result.value && result.value.byteLength > 0) {
 				gotFirst = true;
 				downBytes += result.value.byteLength;
+				lastActivity = Date.now();
 				await io.write(result.value);
 			}
 		}
@@ -242,6 +255,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 						if (done) break;
 						if (value && value.byteLength > 0) {
 							downBytes += value.byteLength;
+							lastActivity = Date.now();
 							await io.write(value);
 						}
 					}
@@ -255,6 +269,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	}
 
 	closed = true;
+	clearInterval(heartbeatTimer);
 	try { writer.releaseLock(); } catch (e) { /* ignore */ }
 	try { await remoteSocket.writable.close(); } catch (e) { /* ignore */ }
 	try { await io.close(); } catch (e) { /* ignore */ }

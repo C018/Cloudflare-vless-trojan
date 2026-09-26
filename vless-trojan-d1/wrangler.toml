@@ -24,3 +24,11 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 [[kv_namespaces]]
 binding = "GEO_KV"
 id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Durable Objects：WebSocket 代理会话托管（长连接，突破 30s idle 断连）
+[durable_objects]
+bindings = [{ name = "PROXY_DO", class_name = "ProxySessionDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProxySessionDO"]
