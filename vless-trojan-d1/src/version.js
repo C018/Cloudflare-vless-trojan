@@ -1,2 +1,2 @@
 // 系统版本号：由 E:\github\build\build.mjs 每次构建时自动重写（格式 1.0.x-yyyyMMdd-HHmm）
-export const VERSION = '1.0.46-20260927-0014';
+export const VERSION = '1.0.47-20260927-0028';

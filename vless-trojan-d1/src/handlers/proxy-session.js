@@ -217,7 +217,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			}
 
 			if (result.tag === 'timeout') {
-				log(`no first packet in ${DIRECT_FIRST_PACKET_TIMEOUT}ms (${addressRemote}:${portRemote})`);
+				// 不在此打日志：tryFallback 内部已按降级/换路路径记录（避免与 no first packet 重复刷屏）
 				const fb = await tryFallback();
 				if (!fb) break;
 				try { writer.releaseLock(); } catch (e) { /* ignore */ }
@@ -358,16 +358,63 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 }
 
 /**
- * 连接关闭后异步累加流量到 D1
+ * 流量统计批量 flush 合并写：
+ * 连接关闭不再逐条 UPDATE，而是先聚合到进程级缓冲，按 2s 时间窗口合并，
+ * 窗口结束时用 D1 batch() 一次提交所有待写用户（同用户多次连接合并为一条 UPDATE）。
+ * 缓冲条数达到 32 时提前 flush，避免高峰长时间不落库。
+ * 写入失败时把快照回放回缓冲并重试（不静默丢弃计数）。
+ * 注意：与改造前一致为尽力而为写入（无 waitUntil，请求结束 isolate 冻结可能丢失
+ * 最后窗口的数据），短连接高频场景 D1 写入量可降一个数量级。
+ */
+const TRAFFIC_FLUSH_WINDOW = 2000; // 聚合窗口：2s 内的连接关闭合并为一次批量写
+const TRAFFIC_FLUSH_MAX_ITEMS = 32; // 缓冲上限：达到后立即 flush
+const trafficBuffer = new Map(); // `${table}:${id}` -> { up, down }
+let trafficTimer = null;
+
+async function flushTrafficBuffer(DB) {
+	if (!trafficBuffer.size) return;
+	const items = [...trafficBuffer.entries()];
+	trafficBuffer.clear();
+	try {
+		const stmts = items.map(([key, v]) => {
+			const idx = key.lastIndexOf(':');
+			const table = key.slice(0, idx);
+			const id = Number(key.slice(idx + 1));
+			return DB.prepare(`UPDATE ${table} SET up = up + ?, down = down + ? WHERE id = ?`).bind(v.up, v.down, id);
+		});
+		await DB.batch(stmts);
+	} catch (e) {
+		// 失败回放缓冲并安排重试，避免计数永久丢失
+		for (const [k, v] of items) {
+			const cur = trafficBuffer.get(k);
+			if (cur) { cur.up += v.up; cur.down += v.down; }
+			else trafficBuffer.set(k, v);
+		}
+		scheduleTrafficFlush(DB);
+	}
+}
+
+function scheduleTrafficFlush(DB) {
+	if (trafficTimer) return;
+	trafficTimer = setTimeout(() => {
+		trafficTimer = null;
+		flushTrafficBuffer(DB);
+	}, TRAFFIC_FLUSH_WINDOW);
+}
+
+/**
+ * 连接关闭后异步聚合流量：入缓冲 + 窗口 flush（合并写）
  */
 async function recordTraffic(config, userRecord, kind, upBytes, downBytes, log) {
 	if (!userRecord) return;
 	const table = kind === 'vless' ? 'vless_users' : 'trojan_users';
-	try {
-		await config.env.DB.prepare(
-			`UPDATE ${table} SET up = up + ?, down = down + ? WHERE id = ?`
-		).bind(upBytes, downBytes, userRecord.id).run();
-	} catch (e) {
-		log(`record traffic error: ${e.message}`);
+	const key = `${table}:${userRecord.id}`;
+	const e = trafficBuffer.get(key);
+	if (e) { e.up += upBytes; e.down += downBytes; }
+	else trafficBuffer.set(key, { up: upBytes, down: downBytes });
+	scheduleTrafficFlush(config.env.DB);
+	if (trafficBuffer.size >= TRAFFIC_FLUSH_MAX_ITEMS) {
+		try { await flushTrafficBuffer(config.env.DB); }
+		catch (err) { log(`record traffic error: ${err.message}`); }
 	}
 }

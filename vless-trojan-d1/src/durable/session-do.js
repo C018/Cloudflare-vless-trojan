@@ -59,10 +59,15 @@ export class ProxySessionDO {
 		this.io = createWsIO(server, log, earlyData);
 		processProxySession(config, this.env, log, this.io).catch((e) => {
 			log(`ws session error: ${e.message || e}`);
-			// [DIAG] 记录会话异常到 D1（验证后移除）
+			// [DIAG] 记录会话异常到 D1：按 60s 时间窗口限频（高频异常场景只写 1 条/窗口），
+			// 保留排障价值的同时降低 diag_log 表写入频率
 			try {
-				const msg = String((e && e.stack) || e).slice(0, 400);
-				this.env.DB.prepare('INSERT INTO diag_log (ts, tag, result) VALUES (?, ?, ?)').bind(Date.now(), 'session_error', msg).run();
+				const nowTs = Date.now();
+				if (nowTs - (this._lastDiagTs || 0) >= 60_000) {
+					this._lastDiagTs = nowTs;
+					const msg = String((e && e.stack) || e).slice(0, 400);
+					this.env.DB.prepare('INSERT INTO diag_log (ts, tag, result) VALUES (?, ?, ?)').bind(nowTs, 'session_error', msg).run();
+				}
 			} catch (err) { /* ignore */ }
 			safeCloseWebSocket(server);
 		});
@@ -89,15 +94,21 @@ export class ProxySessionDO {
 		this.io.feed(bytes);
 	}
 
-	/** Hibernation API：连接关闭 → io EOF */
+	/** Hibernation API：连接关闭 → io EOF（正常关闭不打日志，仅异常 code 记录） */
 	async webSocketClose(ws, code, reason, wasClean) {
-		console.log(`[ws-do] webSocketClose code=${code} wasClean=${wasClean}`);
+		if (code !== 1000 && code !== 1001) {
+			console.log(`[ws-do] webSocketClose code=${code} wasClean=${wasClean}`);
+		}
 		if (this.io) this.io.signalClose();
 	}
 
-	/** Hibernation API：连接异常 → io EOF */
+	/** Hibernation API：连接异常 → io EOF（按 60s 窗口限频，避免客户端反复异常断开刷屏） */
 	async webSocketError(ws, error) {
-		console.log(`[ws-do] webSocketError ${(error && error.message) || error}`);
+		const nowTs = Date.now();
+		if (nowTs - (this._lastWSErrTs || 0) >= 60_000) {
+			this._lastWSErrTs = nowTs;
+			console.log(`[ws-do] webSocketError ${(error && error.message) || error}`);
+		}
 		if (this.io) this.io.signalClose();
 	}
 }

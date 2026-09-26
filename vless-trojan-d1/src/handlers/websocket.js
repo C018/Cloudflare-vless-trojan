@@ -38,6 +38,9 @@ function normalizeToUint8Array(data) {
  */
 export function extractEarlyData(request, log) {
 	const edParam = new URL(request.url).searchParams.get('ed');
+	// 降噪：ed=2560 是 xray 客户端标准声明，正常 0-RTT 连接不打注入/无负载日志；
+	// 仅当 ed 参数缺失或非预期值时保留日志（异常/兼容性排障有价值）
+	const quietEd = edParam === '2560';
 	let header = request.headers.get('sec-websocket-protocol') || '';
 	if (header) {
 		if (header.startsWith('base64,')) header = header.slice(7);
@@ -47,11 +50,11 @@ export function extractEarlyData(request, log) {
 			return null;
 		}
 		if (earlyData && earlyData.byteLength > 0) {
-			log(`early data injected: ${earlyData.byteLength} B (ed=${edParam || 'n/a'})`);
+			if (!quietEd) log(`early data injected: ${earlyData.byteLength} B (ed=${edParam || 'n/a'})`);
 			return new Uint8Array(earlyData);
 		}
 	}
-	if (edParam) {
+	if (edParam && !quietEd) {
 		log(`ed=${edParam} declared but no sec-websocket-protocol payload`);
 	}
 	return null;

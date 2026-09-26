@@ -24,7 +24,7 @@ export async function resolveViaDoH(hostname, log, rtype = 'A') {
 	const cacheKey = `${rtype}:${hostname}`;
 	const hit = dohCache.get(cacheKey);
 	if (hit && Date.now() - hit.ts < DOH_CACHE_TTL) {
-		log(`doh cache ${hostname} (${rtype}) -> ${hit.ip}`);
+		// 缓存命中为正常路径高频日志，降噪不打
 		return hit.ip;
 	}
 	// 多源 DoH：按用户偏好 DNS 不用 Cloudflare（移除 cloudflare-dns.com）；
@@ -51,7 +51,6 @@ export async function resolveViaDoH(hostname, log, rtype = 'A') {
 				if (ip) {
 					clearTimeout(timer);
 					resolved = ip;
-					log(`doh resolved ${hostname} (${rtype}) -> ${ip}`);
 					break;
 				}
 			}
@@ -298,7 +297,6 @@ async function directConnect(config, hostname, port, initialData, log) {
 		const ip = await resolveViaDoH(hostname, log);
 		if (ip && isCloudflareIp(ip)) {
 			cfResolvedDomain = true;
-			log(`doh cf-detect ${hostname} -> ${ip} (cloudflare ip, use proxyip)`);
 		}
 	}
 
@@ -314,7 +312,6 @@ async function directConnect(config, hostname, port, initialData, log) {
 		}
 		const proxyHost = config.proxyipHost;
 		const proxyPort = Number(config.proxyipPort || 443);
-		log(`direct ${hostname}:${port} -> proxyip ${proxyHost}:${proxyPort}`);
 		let socket = await tryConnect(proxyHost, proxyPort, log);
 		if (!socket) {
 			// proxyip 失败：标记 down 并降级直连目标 hostname/IP

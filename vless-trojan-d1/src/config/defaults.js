@@ -10,6 +10,10 @@ import { hashPassword } from '../admin/auth.js';
  * 消除每个新连接建连路径上的 D1 查询延迟；后台写接口成功后主动失效（见 api.js）。
  */
 const CONFIG_CACHE_TTL = 30_000;
+// 到期流量重置节流：每个连接都会走 createRequestConfig，重置检查改为与配置缓存同周期
+// （30s 内只遍历一次用户表），避免高频连接下每连接都全量扫描 vless/trojan 用户。
+const TRAFFIC_RESET_INTERVAL = 30_000;
+let lastTrafficResetAt = 0;
 const configCache = {
 	settings: { p: null, ts: 0 },
 	vlessUsers: { p: null, ts: 0 },
@@ -297,11 +301,15 @@ export async function createRequestConfig(request, env, options = {}) {
 	const trojanUsers = await cachedLoad('trojanUsers', () => loadTrojanUsers(DB));
 	const routingRules = await cachedLoad('routingRules', () => loadRoutingRules(DB));
 
-	// 到期流量重置（请求级幂等：traffic_reset_at 已过期才清零）
-	await Promise.all([
-		resetExpiredTraffic(DB, vlessUsers, 'vless_users'),
-		resetExpiredTraffic(DB, trojanUsers, 'trojan_users'),
-	]);
+	// 到期流量重置（请求级幂等 + 30s 节流：traffic_reset_at 已过期才清零，避免每连接全量扫描）
+	const nowReset = Date.now();
+	if (nowReset - lastTrafficResetAt >= TRAFFIC_RESET_INTERVAL) {
+		await Promise.all([
+			resetExpiredTraffic(DB, vlessUsers, 'vless_users'),
+			resetExpiredTraffic(DB, trojanUsers, 'trojan_users'),
+		]);
+		lastTrafficResetAt = nowReset;
+	}
 
 	// 入站路径映射：全局 wsPath + 各用户自定义 path（含各自 /Tun grpc 后缀）
 	const inboundPathMap = buildInboundPathMap(wsPath, vlessUsers, trojanUsers);
