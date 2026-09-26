@@ -384,7 +384,7 @@ export async function testUdp(config, log) {
 			// DNS 响应判定：ID 匹配 0x1234 且 QR=1
 			if (payload.length >= 12 && payload[0] === 0x12 && payload[1] === 0x34 && (payload[2] & 0x80) !== 0) {
 				clearTimeout(timer);
-				resolve({ ok: true, latency: Date.now() - t0, bytes: payload.length });
+				resolve({ ok: true, latency: Date.now() - t0, bytes: payload.length, outbound: vlessOb.name || udpName || 'vless' });
 			}
 		}, log);
 	});

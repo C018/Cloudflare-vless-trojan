@@ -825,7 +825,9 @@ async function testUdp(){
   try {
     const r = await api('/admin/api/test/udp',{method:'POST',body:'{}'});
     el.innerHTML = r.ok
-      ? '<span style="color:#34c759">UDP 可用，延迟 '+r.latency+' ms</span>'
+      ? (r.outbound
+          ? '<span style="color:#34c759">当前使用出站代理 '+esc(r.outbound)+' 出站，udp 可用，延迟 '+r.latency+' ms</span>'
+          : '<span style="color:#34c759">UDP 可用，延迟 '+r.latency+' ms</span>')
       : '<span style="color:var(--danger)">UDP 不可用：'+esc(r.error||'')+'</span>';
   } catch(e){ el.innerHTML = '<span style="color:var(--danger)">UDP 测试失败：'+esc(e.message)+'</span>'; }
 }
