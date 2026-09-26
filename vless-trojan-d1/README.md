@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 2b01018e553984e9a5671567693ea87d_161ad920b9a611f1b172525400248c00
-    ReservedCode1: Qkv5hB9QG2X1ceuSzKgyivkZP3LbFX3qUT2yu7zJAecRzrP6TK7y0nzCcA7rDrSdmbJ0gTaUklx6K1n9Op7YI754FyWkoaOLdcOoBFA8TAigmm4Ud5XwXU2HSb8A/bN6/BSzDQTgGXTFaZzyE23vXp/D4UFxFCvp7WP0hNs69l1p0SmPaKolyU0ZKE4=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 2b01018e553984e9a5671567693ea87d_161ad920b9a611f1b172525400248c00
-    ReservedCode2: Qkv5hB9QG2X1ceuSzKgyivkZP3LbFX3qUT2yu7zJAecRzrP6TK7y0nzCcA7rDrSdmbJ0gTaUklx6K1n9Op7YI754FyWkoaOLdcOoBFA8TAigmm4Ud5XwXU2HSb8A/bN6/BSzDQTgGXTFaZzyE23vXp/D4UFxFCvp7WP0hNs69l1p0SmPaKolyU0ZKE4=
----
-
 # vless-trojan-d1
 
 基于 Cloudflare Workers + D1 + KV 的 VLESS / Trojan 双协议代理面板，单文件部署（`_worker.js` 混淆版 / `_worker明.js` 明码版）。
@@ -208,4 +197,3 @@ npm run deploy       # wrangler deploy 发布
 ## 环境变量说明
 
 不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已在 `wrangler.toml` 中声明（含 `[[migrations]] new_sqlite_classes`）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
-*（内容由AI生成，仅供参考）*
