@@ -158,6 +158,7 @@ export function buildAdminUI(tempPassword) {
   @media (max-width:768px){
     .login-card { width:calc(100% - 40px); border-radius:20px; padding:32px 24px; }
     .sidebar { position:fixed; top:auto; left:0; right:0; bottom:0; width:100%; height:58px; display:flex; align-items:center; justify-content:flex-start; overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; scrollbar-width:none; border-top:1px solid var(--border); border-right:0; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); background:rgba(255,255,255,.9); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); z-index:40; }
+    :root[data-theme="dark"] .sidebar { background:rgba(28,28,30,.92); }
     .sidebar::-webkit-scrollbar { display:none; }
     .sidebar h2 { display:none; }
     .nav-item { padding:6px 10px; font-size:10px; text-align:center; border-radius:8px; margin:0 2px; white-space:nowrap; flex:0 0 auto; min-width:60px; }
