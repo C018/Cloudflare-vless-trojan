@@ -12,6 +12,9 @@ import { invalidateConfigCache } from '../config/defaults.js';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8' };
 
+// 配置的放置区域（仅作配置参照，须与 wrangler.deploy.toml [placement] region 保持一致；实际放置以 cf-placement 请求头为准）
+const PLACEMENT_REGION = 'gcp:asia-east2';
+
 function json(data, status = 200) {
 	return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
 }
@@ -76,6 +79,41 @@ export async function handleAdminApi(request, config, ctx) {
 	// ---- 系统版本 ----
 	if (resource === 'version' && method === 'GET') {
 		return json({ ok: true, version: VERSION });
+	}
+
+	// ---- 运行时放置位置检测（cf-placement 运行时路由结果 + cf.colo 实际执行数据中心）----
+	if (resource === 'colo' && method === 'GET') {
+		const cf = (request && request.cf) || {};
+		// Cloudflare 放置检测头：启用 placement 后自动附加，格式 remote-HKG / local-EWR
+		const ph = request.headers.get('cf-placement') || '';
+		let placement_mode = null;
+		let placement_colo = null;
+		if (ph) {
+			const dash = ph.indexOf('-');
+			if (dash > 0) {
+				placement_mode = ph.slice(0, dash);
+				placement_colo = ph.slice(dash + 1) || null;
+			} else {
+				placement_mode = ph;
+			}
+		}
+		return json({
+			ok: true,
+			// 运行时放置检测（来源：cf-placement 请求头，Cloudflare 自动附加）
+			placement_header: ph || null,
+			placement_mode: placement_mode, // 'remote'=已路由到远端数据中心 / 'local'=未路由留在默认位置
+			placement_colo: placement_colo, // cf-placement 头内的数据中心三字码（如 HKG / EWR）
+			// 实际执行数据中心（来源：request.cf，只读）
+			colo: cf.colo || null,
+			region: cf.region || null,
+			city: cf.city || null,
+			country: cf.country || null,
+			continent: cf.continent || null,
+			timezone: cf.timezone || null,
+			host: url.hostname || null,
+			// 配置参照（来源：wrangler.deploy.toml [placement] region 常量，非运行时检测）
+			configured_placement_region: PLACEMENT_REGION
+		});
 	}
 
 	// 旧库自动迁移：vless_users / trojan_users 补充入站路径、到期、流量限制等列（幂等）

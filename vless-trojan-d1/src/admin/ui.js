@@ -88,6 +88,11 @@ export function buildAdminUI(tempPassword) {
   .geo-done.ok { background:#e8f8ef; color:#1d7a3f; }
   .geo-done.err { background:#ffeceb; color:#d70015; }
   /* ---- 网络状态：ip.skk.moe 风格动态探测 ---- */
+  .colo-bar { display:flex; gap:18px; align-items:center; flex-wrap:wrap; background:var(--card); border-radius:14px; padding:12px 16px; margin-bottom:14px; font-size:13px; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+  .colo-bar .colo-item { display:flex; align-items:center; gap:6px; }
+  .colo-bar .colo-lbl { color:var(--muted); font-size:12px; }
+  .colo-bar b { font-size:14px; letter-spacing:.3px; }
+  .colo-bar .colo-muted { color:var(--muted); font-size:12px; }
   .net-toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
   .net-toolbar .auto-refresh { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; user-select:none; }
   .net-toolbar .net-update-time { font-size:12px; color:var(--muted); margin-left:auto; }
@@ -277,7 +282,7 @@ async function switchTab(tab){
   document.querySelectorAll('.nav-item[data-tab]').forEach(el=>el.classList.toggle('active', el.dataset.tab===tab));
   const mc = $('#mainContent');
   if (tab==='stats'){ mc.innerHTML = '<div class="page-title">流量统计</div><div class="card">加载中...</div>'; await loadStats(); return; }
-  if (tab==='netstatus'){ clearNetAuto(); mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（路由规则 + 默认出站 + proxyip + 出站隧道），全部探测在 Worker 内完成，多目标并行、每目标 16 次采样，约 10-15 秒完成。绿=正常，黄=高延迟，红/灰=失败。</div><div class="net-toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button><label class="auto-refresh"><input type="checkbox" id="netAuto" checked onchange="scheduleNetAuto()"> 自动刷新</label><span class="net-update-time" id="netUpdateTime"></span></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
+  if (tab==='netstatus'){ clearNetAuto(); mc.innerHTML = '<div class="page-title">网络状态</div><div class="card" style="padding:12px 16px;font-size:13px;color:var(--muted)">检测按项目网络设置发起（路由规则 + 默认出站 + proxyip + 出站隧道），全部探测在 Worker 内完成，多目标并行、每目标 16 次采样，约 10-15 秒完成。绿=正常，黄=高延迟，红/灰=失败。</div><div class="colo-bar" id="coloBar"><span class="colo-muted">正在获取运行时位置…</span></div><div class="net-toolbar"><button class="btn small" onclick="runNetstatus()">开始检测</button><label class="auto-refresh"><input type="checkbox" id="netAuto" checked onchange="scheduleNetAuto()"> 自动刷新</label><span class="net-update-time" id="netUpdateTime"></span></div><div class="net-grid" id="netGrid"></div>'; runNetstatus(); return; }
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   if (tab==='routetest'){ mc.innerHTML = '<div class="page-title">路由测试</div>'+ROUTE_TEST_CARD; return; }
@@ -765,12 +770,33 @@ async function runNetstatus(){
   const grid = $('#netGrid');
   if (!grid) return;
   renderScanCards(grid);
+  loadColo();
   try {
     const d = await api('/admin/api/netstatus/test',{method:'POST',body:'{}'});
     renderNetCards(grid, d.targets || []);
     const t = $('#netUpdateTime'); if (t) t.textContent = '更新于 ' + new Date(d.ts||Date.now()).toLocaleTimeString();
   } catch(e){ grid.innerHTML = '<div class="card" style="grid-column:1/-1">检测失败: '+esc(e.message)+'</div>'; }
   scheduleNetAuto();
+}
+// ---- 运行时放置位置：页面加载自动请求展示（/admin/api/colo）----
+async function loadColo(){
+  const bar = $('#coloBar');
+  if (!bar) return;
+  try {
+    const c = await api('/admin/api/colo');
+    renderColoBar(c);
+  } catch(e){ bar.innerHTML = '<span class="colo-muted">运行时位置获取失败</span>'; }
+}
+function renderColoBar(c){
+  const bar = $('#coloBar');
+  if (!bar) return;
+  if (!c || !c.ok){ bar.innerHTML = '<span class="colo-muted">无法获取运行时位置</span>'; return; }
+  const colo = c.colo || '—';
+  const city = c.city || '—';
+  const country = c.country || '—';
+  bar.innerHTML =
+    '<span class="colo-item"><span class="colo-lbl">实际执行数据中心</span><b>'+esc(colo)+'</b></span>'+
+    '<span class="colo-item"><span class="colo-lbl">城市</span>'+esc(city)+' / '+esc(country)+'</span>';
 }
 function renderScanCards(grid){
   grid.innerHTML = SCAN_TARGETS.map(t=>{

@@ -11,6 +11,7 @@ import { processVlessHeader } from '../protocol/vless.js';
 import { processTrojanHeader, isTrojanLike } from '../protocol/trojan.js';
 import { handleTcpOutbound, resolveOutbound, directRouteMeta, connectViaProxyIp, markProxyIpDown } from '../outbound/tcp.js';
 import { vlessOutboundConnect } from '../outbound/vless.js';
+import { createCoalescer } from '../outbound/coalesce.js';
 import { decideRoute } from '../routing/engine.js';
 
 /**
@@ -147,6 +148,8 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let routeMeta = directRouteMeta.get(remoteSocket) || null;
 	let fallbackDone = false;
 	let writer = remoteSocket.writable.getWriter();
+	// 上行合并器：客户端 → 出站代理，小包合并降低出站 ws.send / TCP 写频率
+	let upCoalescer = createCoalescer((d) => writer.write(d), { log });
 
 	/**
 	 * 首包前直连无响应 → 回退换路：
@@ -191,17 +194,22 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
 				lastActivity = Date.now();
-				await writer.write(chunk);
+				upCoalescer.push(chunk);
 			}
 		} catch (e) {
 			log(`upstream read error: ${e.message}`);
 		}
+		await upCoalescer.flush();
+		upCoalescer.destroy();
 	})();
 
 	// remote -> io（远端下行）
 	try {
 		let reader = remoteSocket.readable.getReader();
 		let gotFirst = false;
+		// 下行合并器：出站代理 → 客户端，小包合并减少客户端侧帧发送次数；
+		// 首包直通保 TTFB，首个包之后的小包才进合并器
+		let downCoalescer = null;
 		while (true) {
 			let result;
 			if (!gotFirst && !fallbackDone) {
@@ -220,9 +228,11 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				log(`no first packet in ${DIRECT_FIRST_PACKET_TIMEOUT}ms (${addressRemote}:${portRemote})`);
 				const fb = await tryFallback();
 				if (!fb) break;
+				upCoalescer.destroy();
 				try { writer.releaseLock(); } catch (e) { /* ignore */ }
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
+				upCoalescer = createCoalescer((d) => writer.write(d), { log });
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				reader = remoteSocket.readable.getReader();
 				gotFirst = false;
@@ -234,7 +244,12 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				gotFirst = true;
 				downBytes += result.value.byteLength;
 				lastActivity = Date.now();
-				await io.write(result.value);
+				if (!downCoalescer) {
+					downCoalescer = createCoalescer((d) => io.write(d), { log });
+					await io.write(result.value);
+				} else {
+					downCoalescer.push(result.value);
+				}
 			}
 		}
 	} catch (e) {
@@ -243,12 +258,15 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			log(`tcp remote read error before first packet: ${e.message || e}`);
 			const fb = await tryFallback();
 			if (fb) {
+				upCoalescer.destroy();
 				try { writer.releaseLock(); } catch (x) { /* ignore */ }
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
+				upCoalescer = createCoalescer((d) => writer.write(d), { log });
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				fallbackDone = true;
 				const reader2 = remoteSocket.readable.getReader();
+				if (!downCoalescer) downCoalescer = createCoalescer((d) => io.write(d), { log });
 				try {
 					while (true) {
 						const { done, value } = await reader2.read();
@@ -256,7 +274,12 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 						if (value && value.byteLength > 0) {
 							downBytes += value.byteLength;
 							lastActivity = Date.now();
-							await io.write(value);
+							if (!gotFirst) {
+								gotFirst = true;
+								await io.write(value);
+							} else {
+								downCoalescer.push(value);
+							}
 						}
 					}
 				} catch (e2) {
@@ -268,8 +291,11 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		}
 	}
 
+	// 冲刷下行积攒数据（保证不丢字节）后收尾
+	if (downCoalescer) await downCoalescer.flush();
 	closed = true;
 	clearInterval(heartbeatTimer);
+	upCoalescer.destroy();
 	try { writer.releaseLock(); } catch (e) { /* ignore */ }
 	try { await remoteSocket.writable.close(); } catch (e) { /* ignore */ }
 	try { await io.close(); } catch (e) { /* ignore */ }

@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 2b01018e553984e9a5671567693ea87d_161ad920b9a611f1b172525400248c00
+    ReservedCode1: Qkv5hB9QG2X1ceuSzKgyivkZP3LbFX3qUT2yu7zJAecRzrP6TK7y0nzCcA7rDrSdmbJ0gTaUklx6K1n9Op7YI754FyWkoaOLdcOoBFA8TAigmm4Ud5XwXU2HSb8A/bN6/BSzDQTgGXTFaZzyE23vXp/D4UFxFCvp7WP0hNs69l1p0SmPaKolyU0ZKE4=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 2b01018e553984e9a5671567693ea87d_161ad920b9a611f1b172525400248c00
+    ReservedCode2: Qkv5hB9QG2X1ceuSzKgyivkZP3LbFX3qUT2yu7zJAecRzrP6TK7y0nzCcA7rDrSdmbJ0gTaUklx6K1n9Op7YI754FyWkoaOLdcOoBFA8TAigmm4Ud5XwXU2HSb8A/bN6/BSzDQTgGXTFaZzyE23vXp/D4UFxFCvp7WP0hNs69l1p0SmPaKolyU0ZKE4=
+---
+
 # vless-trojan-d1
 
 基于 Cloudflare Workers + D1 + KV 的 VLESS / Trojan 双协议代理面板，单文件部署（`_worker.js` 混淆版 / `_worker明.js` 明码版）。
@@ -15,6 +26,7 @@
 - 订阅生成：单节点 / 聚合（纯文本 / Base64 / Clash / sing-box）
 - 单凭据配置页：`/uuid=<uuid>` 与 `/password=<密码>` 返回专属节点链接
 - 网络状态检测：后台「网络状态」页按项目出站链（分流规则 + 默认出站 + proxyip + 出站隧道）在 Worker 内多目标并行探测，每目标 16 次采样，展示延迟 / 丢包 / min / max；ip.skk.moe 风格卡片，品牌色 Logo 与呼吸灯，支持自动刷新
+- 运行时放置位置检测：后台「网络状态」页顶部新增运行时位置条（页面加载自动请求），展示当前请求实际处理的数据中心信息（`cf.colo` 三字码、CF 区域、城市/国家、入口域名、配置放置区域），API 端点为 `GET /admin/api/colo`（与现有 admin 鉴权一致，PBKDF2 + HMAC Cookie），用于确认区域放置（placement `region=gcp:asia-east2`）是否生效，排查请求被调度到非预期区域导致的延迟问题
 - 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理、网络状态检测），PBKDF2 + HMAC Cookie 鉴权；移动端侧边栏自动改为底部横向滑动导航
 - 伪装页：内嵌静态仿 Alist 文件列表页，无外部依赖
 - DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 增加 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`）与 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
@@ -196,3 +208,4 @@ npm run deploy       # wrangler deploy 发布
 ## 环境变量说明
 
 不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已在 `wrangler.toml` 中声明（含 `[[migrations]] new_sqlite_classes`）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
+*（内容由AI生成，仅供参考）*
