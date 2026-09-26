@@ -147,9 +147,31 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	// 当前 direct 路由元信息：是否已走 proxyip
 	let routeMeta = directRouteMeta.get(remoteSocket) || null;
 	let fallbackDone = false;
+	// 上行首包直通标记（换路时重置，保证新链路首包也直通）
+	let upGotFirst = false;
 	let writer = remoteSocket.writable.getWriter();
 	// 上行合并器：客户端 → 出站代理，小包合并降低出站 ws.send / TCP 写频率
 	let upCoalescer = createCoalescer((d) => writer.write(d), { log });
+	// 下行合并器：出站代理 → 客户端（try 块内惰性创建，收尾在块外 flush，故声明提到函数体顶层）
+	let downCoalescer = null;
+	// 交互模式检测：观察窗口内累计流量低于阈值 → 判定为请求-响应型连接（测速/网页/API），
+	// 立即禁用合并器全程直通，消除小包合并引入的 20ms 级延迟；大流量连接（下载/上传/流媒体）保持合并以保吞吐
+	const INTERACTIVE_WINDOW_MS = 1200;
+	const INTERACTIVE_BYTES = 128 * 1024;
+	let interactive = false;
+	let totalBytes = 0;
+	const connStart = Date.now();
+	const maybeDisableCoalescer = () => {
+		if (interactive) return;
+		if (Date.now() - connStart >= INTERACTIVE_WINDOW_MS && totalBytes < INTERACTIVE_BYTES) {
+			interactive = true;
+			log(`interactive flow detected (${totalBytes}B in ${INTERACTIVE_WINDOW_MS}ms), coalescer disabled`);
+			upCoalescer.flush();
+			if (downCoalescer) downCoalescer.flush();
+			upCoalescer.destroy();
+			if (downCoalescer) downCoalescer.destroy();
+		}
+	};
 
 	/**
 	 * 首包前直连无响应 → 回退换路：
@@ -193,8 +215,20 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk === null || chunk === undefined) break;
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
+				totalBytes += chunk.byteLength;
 				lastActivity = Date.now();
-				upCoalescer.push(chunk);
+				if (!upGotFirst) {
+					// 首包直通：与下行对称，避免交互小请求被合并器拖 20ms
+					upGotFirst = true;
+					await writer.write(chunk);
+				} else {
+					maybeDisableCoalescer();
+					if (interactive) {
+						await writer.write(chunk);
+					} else {
+						upCoalescer.push(chunk);
+					}
+				}
 			}
 		} catch (e) {
 			log(`upstream read error: ${e.message}`);
@@ -209,7 +243,6 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		let gotFirst = false;
 		// 下行合并器：出站代理 → 客户端，小包合并减少客户端侧帧发送次数；
 		// 首包直通保 TTFB，首个包之后的小包才进合并器
-		let downCoalescer = null;
 		while (true) {
 			let result;
 			if (!gotFirst && !fallbackDone) {
@@ -233,6 +266,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
 				upCoalescer = createCoalescer((d) => writer.write(d), { log });
+				upGotFirst = false;
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				reader = remoteSocket.readable.getReader();
 				gotFirst = false;
@@ -243,12 +277,18 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			if (result.value && result.value.byteLength > 0) {
 				gotFirst = true;
 				downBytes += result.value.byteLength;
+				totalBytes += result.value.byteLength;
 				lastActivity = Date.now();
 				if (!downCoalescer) {
 					downCoalescer = createCoalescer((d) => io.write(d), { log });
 					await io.write(result.value);
 				} else {
-					downCoalescer.push(result.value);
+					maybeDisableCoalescer();
+					if (interactive) {
+						await io.write(result.value);
+					} else {
+						downCoalescer.push(result.value);
+					}
 				}
 			}
 		}
@@ -263,6 +303,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
 				upCoalescer = createCoalescer((d) => writer.write(d), { log });
+				upGotFirst = false;
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				fallbackDone = true;
 				const reader2 = remoteSocket.readable.getReader();
@@ -273,12 +314,18 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 						if (done) break;
 						if (value && value.byteLength > 0) {
 							downBytes += value.byteLength;
+							totalBytes += value.byteLength;
 							lastActivity = Date.now();
 							if (!gotFirst) {
 								gotFirst = true;
 								await io.write(value);
 							} else {
-								downCoalescer.push(value);
+								maybeDisableCoalescer();
+								if (interactive) {
+									await io.write(value);
+								} else {
+									downCoalescer.push(value);
+								}
 							}
 						}
 					}
