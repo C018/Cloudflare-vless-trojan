@@ -2,6 +2,8 @@
  * SOCKS5 outbound proxy
  */
 
+import { expandIPv6 } from '../protocol/vless.js';
+
 /**
  * 使用可变缓冲实现精确读取：TCP 分片场景下累积到满足 minBytes，
  * 多余字节保留在 holder.buf 中，握手完成后合并进隧道流。
@@ -81,7 +83,7 @@ export async function socks5Connect(addressType, addressRemote, portRemote, log,
 				DSTADDR = new Uint8Array([3, addressRemote.length, ...encoder.encode(addressRemote)]);
 				break;
 			case 3:
-				DSTADDR = new Uint8Array([4, ...addressRemote.split(':').flatMap((x) => [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2), 16)])]);
+				DSTADDR = new Uint8Array([4, ...expandIPv6(addressRemote).split(':').flatMap((x) => [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2), 16)])]);
 				break;
 			default:
 				log(`invalid addressType ${addressType}`);

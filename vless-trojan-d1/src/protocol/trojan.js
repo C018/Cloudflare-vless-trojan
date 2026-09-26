@@ -124,7 +124,7 @@ export async function processTrojanHeader(protocolBuffer, passwordSet) {
 		hasError: false,
 		userPassword: matchedPassword,
 		addressRemote: addressValue,
-		addressType: addressType === 3 ? 2 : addressType, // 映射到 VLESS 语义（2=domain）
+		addressType: addressType === 3 ? 2 : (addressType === 4 ? 3 : addressType), // 映射到 VLESS 语义（2=domain，3=IPv6；Trojan atyp=4 为 IPv6）
 		portRemote,
 		rawDataIndex: crlfIndex + 2,
 		isUDP: command === 0x03

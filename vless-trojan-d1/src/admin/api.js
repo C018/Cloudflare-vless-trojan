@@ -694,7 +694,9 @@ function intToIpv6(n) {
 /**
  * 旧库自动迁移：vless_users / trojan_users 补充入站路径、到期时间、流量限制、流量重置列（幂等）
  */
+let userColumnsEnsured = false;
 async function ensureUserColumns(DB) {
+	if (userColumnsEnsured) return;
 	const ADD_COLUMNS = [
 		['path', "TEXT DEFAULT ''"],
 		['expire_at', 'INTEGER DEFAULT 0'],
@@ -714,4 +716,5 @@ async function ensureUserColumns(DB) {
 			console.log(`[admin] ${table} migration skipped: ${e.message}`);
 		}
 	}
+	userColumnsEnsured = true;
 }

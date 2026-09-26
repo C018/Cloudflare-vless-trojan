@@ -41,8 +41,11 @@ export default {
 					return await handleAdminApi(request, config, ctx);
 				}
 				// /admin /admin/ 及 /admin 下其它路径 → 后台 UI（首次部署附带初始密码提示）
-				return new Response(buildAdminUI(config.adminTempPassword), {
-					headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+				const uiHtml = buildAdminUI(config.adminTempPassword);
+				// 已设置管理密码时页面为静态内容，允许 CDN/浏览器缓存 5 分钟；首次部署含临时密码提示时禁止缓存
+				const cacheControl = config.adminTempPassword ? 'no-store' : 'public, max-age=300';
+				return new Response(uiHtml, {
+					headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': cacheControl }
 				});
 			}
 

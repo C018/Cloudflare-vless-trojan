@@ -60,15 +60,51 @@ function ipv4ToInt(ip) {
 }
 
 /**
- * CIDR 匹配（仅 IPv4；IPv6 目标跳过 ip-cidr）
+ * IPv6 字符串 -> BigInt（支持 :: 压缩与方括号）
+ */
+function ipv6ToBigInt(ipv6) {
+	const s = String(ipv6).replace(/^\[|\]$/g, '');
+	const dbl = s.indexOf('::');
+	let left, right;
+	if (dbl >= 0) {
+		left = dbl === 0 ? [] : s.slice(0, dbl).split(':');
+		right = dbl === s.length - 2 ? [] : s.slice(dbl + 2).split(':');
+	} else {
+		left = s.split(':');
+		right = [];
+	}
+	if (left.length + right.length > 8) return null;
+	const missing = 8 - left.length - right.length;
+	const groups = [...left, ...Array(missing).fill('0'), ...right];
+	let n = 0n;
+	for (const g of groups) {
+		if (!g) return null;
+		const v = parseInt(g, 16);
+		if (isNaN(v)) return null;
+		n = (n << 16n) | BigInt(v);
+	}
+	return n;
+}
+
+/**
+ * CIDR 匹配（IPv4 / IPv6 双栈）
  * @param {string} ipAddr
  * @param {string} cidr
  */
 function matchCidr(ipAddr, cidr) {
-	const [base, prefixStr] = cidr.split('/');
-	const prefix = prefixStr !== undefined ? Number(prefixStr) : 32;
+	const slash = cidr.indexOf('/');
+	const base = slash >= 0 ? cidr.slice(0, slash) : cidr;
+	const defaultPrefix = ipAddr.includes(':') ? 128 : 32;
+	const prefix = slash >= 0 ? Number(cidr.slice(slash + 1)) : defaultPrefix;
+	if (ipAddr.includes(':')) {
+		const ip = ipv6ToBigInt(ipAddr);
+		const baseInt = ipv6ToBigInt(base);
+		if (ip === null || baseInt === null || isNaN(prefix) || prefix < 0 || prefix > 128) return false;
+		const mask = prefix === 0 ? 0n : ((1n << 128n) - 1n) ^ ((1n << BigInt(128 - prefix)) - 1n);
+		return (ip & mask) === (baseInt & mask);
+	}
 	const ipInt = ipv4ToInt(ipAddr);
-	if (ipInt === null) return false; // IPv6 or invalid
+	if (ipInt === null) return false;
 	const baseInt = ipv4ToInt(base);
 	if (baseInt === null) return false;
 	const mask = prefix <= 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;

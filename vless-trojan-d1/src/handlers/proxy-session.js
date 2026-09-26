@@ -11,7 +11,6 @@ import { processVlessHeader } from '../protocol/vless.js';
 import { processTrojanHeader, isTrojanLike } from '../protocol/trojan.js';
 import { handleTcpOutbound, resolveOutbound, directRouteMeta, connectViaProxyIp, markProxyIpDown } from '../outbound/tcp.js';
 import { vlessOutboundConnect } from '../outbound/vless.js';
-import { createCoalescer } from '../outbound/coalesce.js';
 import { decideRoute } from '../routing/engine.js';
 
 /**
@@ -147,35 +146,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	// 当前 direct 路由元信息：是否已走 proxyip
 	let routeMeta = directRouteMeta.get(remoteSocket) || null;
 	let fallbackDone = false;
-	// 上行首包直通标记（换路时重置，保证新链路首包也直通）
-	let upGotFirst = false;
-	// 上行快速交互判定：非首包且累计上行 < 4KB → 判定为连续小请求（测速多轮/API 轮询），
-	// 立即禁用上行合并器直通，不必等到 INTERACTIVE_WINDOW_MS 时间窗口；只影响上行，下行仍按窗口判定保护大流量
-	let upInteractive = false;
-	const UP_INTERACTIVE_BYTES = 4096;
 	let writer = remoteSocket.writable.getWriter();
-	// 上行合并器：客户端 → 出站代理，小包合并降低出站 ws.send / TCP 写频率
-	let upCoalescer = createCoalescer((d) => writer.write(d), { log });
-	// 下行合并器：出站代理 → 客户端（try 块内惰性创建，收尾在块外 flush，故声明提到函数体顶层）
-	let downCoalescer = null;
-	// 交互模式检测：观察窗口内累计流量低于阈值 → 判定为请求-响应型连接（测速/网页/API），
-	// 立即禁用合并器全程直通，消除小包合并引入的 20ms 级延迟；大流量连接（下载/上传/流媒体）保持合并以保吞吐
-	const INTERACTIVE_WINDOW_MS = 1200;
-	const INTERACTIVE_BYTES = 128 * 1024;
-	let interactive = false;
-	let totalBytes = 0;
-	const connStart = Date.now();
-	const maybeDisableCoalescer = () => {
-		if (interactive) return;
-		if (Date.now() - connStart >= INTERACTIVE_WINDOW_MS && totalBytes < INTERACTIVE_BYTES) {
-			interactive = true;
-			log(`interactive flow detected (${totalBytes}B in ${INTERACTIVE_WINDOW_MS}ms), coalescer disabled`);
-			upCoalescer.flush();
-			if (downCoalescer) downCoalescer.flush();
-			upCoalescer.destroy();
-			if (downCoalescer) downCoalescer.destroy();
-		}
-	};
 
 	/**
 	 * 首包前直连无响应 → 回退换路：
@@ -211,7 +182,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		}
 	};
 
-	// io -> remote（客户端上行）
+	// io -> remote（客户端上行，全程直通：最小延迟优先，不做小包合并）
 	const upstream = (async () => {
 		try {
 			for (;;) {
@@ -219,41 +190,18 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk === null || chunk === undefined) break;
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
-				totalBytes += chunk.byteLength;
 				lastActivity = Date.now();
-				if (!upGotFirst) {
-					// 首包直通：与下行对称，避免交互小请求被合并器拖 20ms
-					upGotFirst = true;
-					await writer.write(chunk);
-				} else {
-					maybeDisableCoalescer();
-					// 上行快速交互判定：连续小请求直接直通，不排队
-					if (!upInteractive && upBytes < UP_INTERACTIVE_BYTES) {
-						upInteractive = true;
-						log(`upstream fast-interactive (${upBytes}B cumulative), up coalescer disabled`);
-						await upCoalescer.flush();
-						upCoalescer.destroy();
-					}
-					if (interactive || upInteractive) {
-						await writer.write(chunk);
-					} else {
-						upCoalescer.push(chunk);
-					}
-				}
+				await writer.write(chunk);
 			}
 		} catch (e) {
 			log(`upstream read error: ${e.message}`);
 		}
-		await upCoalescer.flush();
-		upCoalescer.destroy();
 	})();
 
-	// remote -> io（远端下行）
+	// remote -> io（远端下行，全程直通：最小延迟优先，不做小包合并）
 	try {
 		let reader = remoteSocket.readable.getReader();
 		let gotFirst = false;
-		// 下行合并器：出站代理 → 客户端，小包合并减少客户端侧帧发送次数；
-		// 首包直通保 TTFB，首个包之后的小包才进合并器
 		while (true) {
 			let result;
 			if (!gotFirst && !fallbackDone) {
@@ -272,12 +220,9 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				log(`no first packet in ${DIRECT_FIRST_PACKET_TIMEOUT}ms (${addressRemote}:${portRemote})`);
 				const fb = await tryFallback();
 				if (!fb) break;
-				upCoalescer.destroy();
 				try { writer.releaseLock(); } catch (e) { /* ignore */ }
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
-				upCoalescer = createCoalescer((d) => writer.write(d), { log });
-				upGotFirst = false;
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				reader = remoteSocket.readable.getReader();
 				gotFirst = false;
@@ -288,19 +233,8 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			if (result.value && result.value.byteLength > 0) {
 				gotFirst = true;
 				downBytes += result.value.byteLength;
-				totalBytes += result.value.byteLength;
 				lastActivity = Date.now();
-				if (!downCoalescer) {
-					downCoalescer = createCoalescer((d) => io.write(d), { log });
-					await io.write(result.value);
-				} else {
-					maybeDisableCoalescer();
-					if (interactive) {
-						await io.write(result.value);
-					} else {
-						downCoalescer.push(result.value);
-					}
-				}
+				await io.write(result.value);
 			}
 		}
 	} catch (e) {
@@ -309,35 +243,20 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			log(`tcp remote read error before first packet: ${e.message || e}`);
 			const fb = await tryFallback();
 			if (fb) {
-				upCoalescer.destroy();
 				try { writer.releaseLock(); } catch (x) { /* ignore */ }
 				remoteSocket = fb;
 				writer = remoteSocket.writable.getWriter();
-				upCoalescer = createCoalescer((d) => writer.write(d), { log });
-				upGotFirst = false;
 				routeMeta = directRouteMeta.get(remoteSocket) || null;
 				fallbackDone = true;
 				const reader2 = remoteSocket.readable.getReader();
-				if (!downCoalescer) downCoalescer = createCoalescer((d) => io.write(d), { log });
 				try {
 					while (true) {
 						const { done, value } = await reader2.read();
 						if (done) break;
 						if (value && value.byteLength > 0) {
 							downBytes += value.byteLength;
-							totalBytes += value.byteLength;
 							lastActivity = Date.now();
-							if (!gotFirst) {
-								gotFirst = true;
-								await io.write(value);
-							} else {
-								maybeDisableCoalescer();
-								if (interactive) {
-									await io.write(value);
-								} else {
-									downCoalescer.push(value);
-								}
-							}
+							await io.write(value);
 						}
 					}
 				} catch (e2) {
@@ -349,11 +268,8 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		}
 	}
 
-	// 冲刷下行积攒数据（保证不丢字节）后收尾
-	if (downCoalescer) await downCoalescer.flush();
 	closed = true;
 	clearInterval(heartbeatTimer);
-	upCoalescer.destroy();
 	try { writer.releaseLock(); } catch (e) { /* ignore */ }
 	try { await remoteSocket.writable.close(); } catch (e) { /* ignore */ }
 	try { await io.close(); } catch (e) { /* ignore */ }

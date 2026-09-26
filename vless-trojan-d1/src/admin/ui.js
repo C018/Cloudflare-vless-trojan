@@ -2,11 +2,14 @@
  * Admin UI: iOS settings style single-page app
  */
 
+let adminUiCache = null;
 export function buildAdminUI(tempPassword) {
+	// 后台 UI 为静态 SPA：tempPassword 为空时（已设管理密码）缓存生成结果，避免每次请求重复拼接 55KB HTML
+	if (!tempPassword && adminUiCache) return adminUiCache;
 	const initPwdHtml = tempPassword
 		? `<p style="margin:-8px 0 16px;padding:10px 12px;background:#e8f8ef;color:#1d7a3f;border-radius:10px;font-size:13px">首次部署初始密码：<b>${tempPassword}</b><br>登录后请及时修改</p>`
 		: '';
-	return `<!DOCTYPE html>
+	const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -878,4 +881,6 @@ async function testOutbound(idx, ev){
 </script>
 </body>
 </html>`;
+	if (!tempPassword) adminUiCache = html;
+	return html;
 }

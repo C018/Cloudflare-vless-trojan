@@ -13,39 +13,45 @@ const DOH_CACHE_TTL = 300_000;
 const dohCache = new Map(); // hostname -> { ip, ts }
 
 /**
- * DoH 解析域名（Google Public DNS，IP 直连形式，避免 DoH 域名本身解析不到），返回首个 A 记录 IPv4；失败返回 null（交由运行时 DNS 兜底）
+ * DoH 解析域名（多源，优先域名型因为 Worker 环境 fetch IP 型可能不可达），
+ * rtype='A' 返回首个 A 记录 IPv4，rtype='AAAA' 返回首个 AAAA 记录 IPv6；失败返回 null。
+ * 缓存 key 含记录类型，TTL 300s。
  * @param {string} hostname
  * @param {Function} log
+ * @param {'A'|'AAAA'} [rtype]
  */
-export async function resolveViaDoH(hostname, log) {
-	const hit = dohCache.get(hostname);
+export async function resolveViaDoH(hostname, log, rtype = 'A') {
+	const cacheKey = `${rtype}:${hostname}`;
+	const hit = dohCache.get(cacheKey);
 	if (hit && Date.now() - hit.ts < DOH_CACHE_TTL) {
-		log(`doh cache ${hostname} -> ${hit.ip}`);
+		log(`doh cache ${hostname} (${rtype}) -> ${hit.ip}`);
 		return hit.ip;
 	}
-	// 多源 DoH：优先域名型（Worker 环境 fetch IP 型可能不可达），Google IP 型兜底
+	// 多源 DoH：按用户偏好 DNS 不用 Cloudflare（移除 cloudflare-dns.com）；
+	// Google IP 型优先，国内非 CF 域名型兜底，失败自动切换下一源
 	const endpoints = [
-		'https://cloudflare-dns.com/dns-query',
-		'https://dns.alidns.com/resolve',
-		'https://doh.pub/resolve',
 		'https://8.8.8.8/resolve',
 		'https://8.8.4.4/resolve',
+		'https://doh.pub/resolve',
+		'https://dns.alidns.com/resolve',
 	];
+	const wantType = rtype === 'AAAA' ? 28 : 1;
+	const ipRe = rtype === 'AAAA' ? /^[0-9a-fA-F:]+$/ : /^\d{1,3}(\.\d{1,3}){3}$/;
 	let resolved = null;
 	for (const endpoint of endpoints) {
 		const ac = new AbortController();
-		const timer = setTimeout(() => ac.abort(), 3000);
+		const timer = setTimeout(() => ac.abort(), 2500);
 		try {
-			const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=A`;
+			const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${rtype}`;
 			const resp = await fetch(url, { headers: { accept: 'application/dns-json' }, signal: ac.signal });
 			if (resp.ok) {
 				const j = await resp.json();
 				const ans = Array.isArray(j.Answer) ? j.Answer : [];
-				const ip = ans.find((a) => a.type === 1 && /^\d{1,3}(\.\d{1,3}){3}$/.test(a.data))?.data;
+				const ip = ans.find((a) => a.type === wantType && ipRe.test(a.data))?.data;
 				if (ip) {
 					clearTimeout(timer);
 					resolved = ip;
-					log(`doh resolved ${hostname} -> ${ip}`);
+					log(`doh resolved ${hostname} (${rtype}) -> ${ip}`);
 					break;
 				}
 			}
@@ -55,8 +61,8 @@ export async function resolveViaDoH(hostname, log) {
 			clearTimeout(timer);
 		}
 	}
-	if (resolved) dohCache.set(hostname, { ip: resolved, ts: Date.now() });
-	else log(`doh resolve failed: ${hostname}`);
+	if (resolved) dohCache.set(cacheKey, { ip: resolved, ts: Date.now() });
+	else log(`doh resolve failed: ${hostname} (${rtype})`);
 	return resolved;
 }
 
@@ -227,6 +233,14 @@ async function connectDirect(hostname, port, isIpLiteral, cfDomain, log) {
 		if (ip) {
 			log(`direct ${hostname}:${port} -> doh fallback ${ip}:${port}`);
 			s = await tryConnect(ip, port, log);
+			if (s) return s;
+		}
+		// A 记录不存在（纯 IPv6 域名，如 ipv6-api.speedtest.net）→ 查 AAAA，方括号字面量直连 IPv6
+		const ip6 = await resolveViaDoH(hostname, log, 'AAAA');
+		if (ip6) {
+			const ip6Literal = `[${ip6}]`;
+			log(`direct ${hostname}:${port} -> doh aaaa fallback ${ip6Literal}:${port}`);
+			s = await tryConnect(ip6Literal, port, log);
 			if (s) return s;
 		}
 		return null;
