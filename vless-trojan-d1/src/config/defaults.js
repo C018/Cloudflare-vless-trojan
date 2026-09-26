@@ -2,7 +2,7 @@
  * Defaults + request-scoped config loader (D1 backed)
  */
 
-import { DEFAULT_WS_PATH, OUTBOUND_DIRECT, INBOUND_TRANSPORT_DEFAULT } from './constants.js';
+import { DEFAULT_WS_PATH, OUTBOUND_DIRECT, OUTBOUND_REJECT, INBOUND_TRANSPORT_DEFAULT } from './constants.js';
 import { hashPassword } from '../admin/auth.js';
 
 /**
@@ -262,16 +262,26 @@ export async function createRequestConfig(request, env, options = {}) {
 		adminTempPassword = ensured.tempPassword;
 	}
 	const proxyipRaw = settings.proxyip || '';
-	// proxyip：可填 IP 或域名，支持 [host:port] 或裸 host（默认 443），仅默认出站 direct 时生效
+	// outbounds 提前加载：proxyip 出站名匹配依赖出站表
+	const outbounds = await cachedLoad('outbounds', () => loadOutbounds(DB));
+	// proxyip：可填 IP 或域名，支持 [host:port] 或裸 host（默认 443），也可直接填出站名（该出站代理出站），
+	// 仅默认出站 direct 时生效
 	let proxyipHost = '';
 	let proxyipPort = 443;
+	let proxyipOutbound = '';
 	if (proxyipRaw) {
-		const idx = proxyipRaw.lastIndexOf(':');
-		if (idx > 0 && !proxyipRaw.includes(']') && /^\d+$/.test(proxyipRaw.slice(idx + 1))) {
-			proxyipHost = proxyipRaw.slice(0, idx);
-			proxyipPort = Number(proxyipRaw.slice(idx + 1)) || 443;
+		// 优先匹配出站名（vless / socks5 / http 出站）：命中后 CF 目标走该出站代理
+		const named = outbounds.find((o) => o.name === proxyipRaw && o.type !== OUTBOUND_DIRECT && o.type !== OUTBOUND_REJECT);
+		if (named) {
+			proxyipOutbound = proxyipRaw;
 		} else {
-			proxyipHost = proxyipRaw;
+			const idx = proxyipRaw.lastIndexOf(':');
+			if (idx > 0 && !proxyipRaw.includes(']') && /^\d+$/.test(proxyipRaw.slice(idx + 1))) {
+				proxyipHost = proxyipRaw.slice(0, idx);
+				proxyipPort = Number(proxyipRaw.slice(idx + 1)) || 443;
+			} else {
+				proxyipHost = proxyipRaw;
+			}
 		}
 	}
 	// UDP 出站代理：出站名（仅 vless 支持 UDP）
@@ -285,7 +295,6 @@ export async function createRequestConfig(request, env, options = {}) {
 
 	const vlessUsers = await cachedLoad('vlessUsers', () => loadVlessUsers(DB));
 	const trojanUsers = await cachedLoad('trojanUsers', () => loadTrojanUsers(DB));
-	const outbounds = await cachedLoad('outbounds', () => loadOutbounds(DB));
 	const routingRules = await cachedLoad('routingRules', () => loadRoutingRules(DB));
 
 	// 到期流量重置（请求级幂等：traffic_reset_at 已过期才清零）
@@ -313,6 +322,8 @@ export async function createRequestConfig(request, env, options = {}) {
 		adminTempPassword,
 		proxyipHost,
 		proxyipPort,
+		// proxyip 出站名模式：非空时 CF 目标走该出站代理出站（替代 proxyipHost 裸连）
+		proxyipOutbound,
 		// proxyip 仅当默认出站为 direct（cloudflare:sockets）时生效
 		proxyipDisabled: defaultOutbound !== OUTBOUND_DIRECT,
 		udpOutbound,

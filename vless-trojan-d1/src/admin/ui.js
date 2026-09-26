@@ -493,7 +493,7 @@ async function loadSettings(){
     const fields = [
       ['ws_path','入站路径（ws / grpc / h2 共享；用户未自定义路径时回退到此值）'],
       ['default_outbound','默认出站 (direct / 出站名)'],
-      ['proxyip','proxyip（代理 IP 或域名[:端口]，访问 Cloudflare 及开 CF CDN 网站使用；仅默认出站为 direct 时生效）'],
+      ['proxyip','proxyip（代理 IP 或域名[:端口]，也可直接填出站名使用该出站代理出站；访问 Cloudflare 及开 CF CDN 网站使用；仅默认出站为 direct 时生效）'],
       ['udp_outbound','UDP 出站代理（出站名，仅 vless 支持 UDP）'],
       ['disguise_title','伪装页标题'],
       ['disguise_subtitle','伪装页副标题'],
@@ -809,11 +809,13 @@ function dotCls(ms){
 // ---- 系统设置：proxyip / UDP 测试 ----
 async function testProxyIp(){
   const el = $('#testResult'); if (!el) return;
-  el.innerHTML = 'proxyip 测试中…（连接 proxyip 裸 TCP 探测 Cloudflare 站点）';
+  el.innerHTML = 'proxyip 测试中…';
   try {
     const r = await api('/admin/api/test/proxyip',{method:'POST',body:'{}'});
     el.innerHTML = r.ok
-      ? '<span style="color:#34c759">proxyip 可用，延迟 '+r.latency+' ms</span>（'+esc(r.endpoint||'')+'）'
+      ? (r.mode==='outbound'
+          ? '<span style="color:#34c759">当前使用出站代理 '+esc(r.outbound)+' 出站，可用，延迟 '+r.latency+' ms</span>'
+          : '<span style="color:#34c759">proxyip 可用，延迟 '+r.latency+' ms</span>（'+esc(r.endpoint||'')+'）')
       : '<span style="color:var(--danger)">proxyip 不可用：'+esc(r.error||'')+'</span>';
   } catch(e){ el.innerHTML = '<span style="color:var(--danger)">proxyip 测试失败：'+esc(e.message)+'</span>'; }
 }

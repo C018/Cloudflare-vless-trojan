@@ -146,7 +146,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	const tryFallback = async () => {
 		if (fallbackDone) return null;
 		fallbackDone = true;
-		const proxyipEnabled = !!config.proxyipHost && !config.proxyipDisabled;
+		const proxyipEnabled = (!!config.proxyipHost || !!config.proxyipOutbound) && !config.proxyipDisabled;
 		try { await remoteSocket.close(); } catch (e) { /* ignore */ }
 		if (routeMeta && routeMeta.usedProxyIp) {
 			markProxyIpDown(log);

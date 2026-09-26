@@ -122,10 +122,48 @@ export function isProxyIpDown() {
 }
 
 /**
- * 强制经 proxyIP 建连（对齐 Vless_workers_pages 的 retry：直连无数据后重连 proxyip:proxyPort 写首包）
+ * proxyip 出站名模式：返回匹配的出站对象（vless/socks5/http）；未启用出站名模式或出站不存在返回 null
+ */
+function proxyipOutboundOb(config) {
+	if (!config.proxyipOutbound) return null;
+	const ob = resolveOutbound(config, config.proxyipOutbound);
+	if (!ob || typeof ob === 'string') return null; // direct / reject / 不存在
+	if (ob.type !== OUTBOUND_VLESS && ob.type !== OUTBOUND_SOCKS5 && ob.type !== OUTBOUND_HTTP) return null;
+	return ob;
+}
+
+/**
+ * 经 proxyip 出站代理（出站名模式）建连目标端点：替代裸连 proxyipHost:proxyipPort，
+ * 用指定出站（vless/socks5/http）连目标 hostname:port 并写入首包
+ * @returns {Promise<Object|null>} Socket/流式对象 或 null
+ */
+async function connectViaProxyOutbound(config, hostname, port, initialData, log) {
+	const ob = proxyipOutboundOb(config);
+	if (!ob) return null;
+	const addressType = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) ? 1 : (hostname.includes(':') ? 3 : 2);
+	log(`direct ${hostname}:${port} -> retry via outbound ${ob.name}`);
+	const out = await handleTcpOutbound({
+		config, outbound: ob, addressType, addressRemote: hostname, portRemote: port,
+		rawClientData: initialData || new Uint8Array(0), log, isUDP: false,
+	});
+	if (!out) return null;
+	directRouteMeta.set(out, { usedProxyIp: true });
+	return out;
+}
+
+/**
+ * 强制经 proxyIP 建连（对齐 Vless_workers_pages 的 retry：直连无数据后重连 proxyip:proxyPort 写首包）。
+ * 出站名模式：走指定出站代理连目标。
  * @returns {Promise<Object|null>} Socket 或 null
  */
 export async function connectViaProxyIp(config, hostname, port, initialData, log) {
+	// 出站名模式：无数据回退同样走该出站代理
+	const proxyOb = proxyipOutboundOb(config);
+	if (proxyOb) {
+		const out = await connectViaProxyOutbound(config, hostname, port, initialData, log);
+		if (!out) markProxyIpDown(log);
+		return out;
+	}
 	const proxyHost = config.proxyipHost;
 	const proxyPort = Number(config.proxyipPort || 443);
 	if (!proxyHost) return null;
@@ -223,7 +261,7 @@ async function writeInitial(socket, initialData, log) {
 async function directConnect(config, hostname, port, initialData, log) {
 	// proxyip 仅默认出站为 direct 时启用（config.proxyipDisabled 已编码该条件）；
 	// 是否替换端点由"目标是否为 Cloudflare 站点"决定，与端口无关
-	const proxyipEnabled = config.proxyipHost && !config.proxyipDisabled;
+	const proxyipEnabled = (config.proxyipHost || config.proxyipOutbound) && !config.proxyipDisabled;
 	const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':');
 
 	maybeResetProxyIpHealth(log);
@@ -234,6 +272,15 @@ async function directConnect(config, hostname, port, initialData, log) {
 	const cfIpLiteral = isIpLiteral && !hostname.includes(':') && isCloudflareIp(hostname);
 
 	if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral)) {
+		// 出站名模式：CF 目标走指定出站代理（vless/socks5/http），失败降级直连
+		const proxyOb = proxyipOutboundOb(config);
+		if (proxyOb) {
+			const out = await connectViaProxyOutbound(config, hostname, port, initialData, log);
+			if (out) return out;
+			markProxyIpDown(log);
+			log(`proxyip outbound ${proxyOb.name} failed; degrade to direct ${hostname}:${port}`);
+			return connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain, initialData, log);
+		}
 		const proxyHost = config.proxyipHost;
 		const proxyPort = Number(config.proxyipPort || 443);
 		log(`direct ${hostname}:${port} -> proxyip ${proxyHost}:${proxyPort}`);

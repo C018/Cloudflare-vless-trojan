@@ -229,12 +229,17 @@ export async function testRoute(config, domain, log) {
 	if (outbound === 'direct') {
 		// 出站名不存在时 resolveOutbound 回退 direct：保留原始名字用于提示
 		const originalName = decision.outbound;
-		// 与 directConnect 判定完全一致
-		const proxyipEnabled = !!config.proxyipHost && !config.proxyipDisabled;
+		// 与 directConnect 判定完全一致（proxyip 支持端点或出站名两种模式）
+		const proxyipEnabled = (!!config.proxyipHost || !!config.proxyipOutbound) && !config.proxyipDisabled;
 		const proxyipDown = proxyipEnabled && isProxyIpDown();
 		const cfDomain = !isIpLiteral && isCloudflareDomain(host);
 		const cfIpLiteral = isIpLiteral && !host.includes(':') && isCloudflareIp(host);
 		if (proxyipEnabled && !proxyipDown && (cfDomain || cfIpLiteral)) {
+			if (config.proxyipOutbound) {
+				return { ok: true, domain: host, route: 'proxyip', name: `outbound:${config.proxyipOutbound}`,
+					reason: `${rulePrefix}Cloudflare 站点（已知 CF 后缀/IP 段）→ 使用出站代理 ${config.proxyipOutbound} 出站`,
+					rule: ruleHit ? decision.rule.rule : null };
+			}
 			const ep = `${config.proxyipHost}:${Number(config.proxyipPort || 443)}`;
 			return { ok: true, domain: host, route: 'proxyip', name: ep,
 				reason: `${rulePrefix}Cloudflare 站点（已知 CF 后缀/IP 段）→ proxyip ${ep}`,
@@ -260,15 +265,43 @@ export async function testRoute(config, domain, log) {
 }
 
 /**
- * proxyip 测试：按项目 proxyip 逻辑连接 proxyipHost:proxyipPort 裸 TCP，发 HTTP 请求到 Cloudflare 相关站点
- * @returns {Promise<{ok:boolean, latency?:number, endpoint?:string, error?:string}>}
+ * proxyip 测试：支持两种模式——
+ * 1) 出站名模式（proxyip 填出站名）：走指定出站代理（vless/socks5/http）连目标发 HTTP 探测；
+ * 2) 端点模式：按项目 proxyip 逻辑连接 proxyipHost:proxyipPort 裸 TCP，发 HTTP 请求到 Cloudflare 相关站点。
+ * @returns {Promise<{ok:boolean, latency?:number, endpoint?:string, mode?:string, outbound?:string, error?:string}>}
  */
 export async function testProxyIp(config, log) {
+	const host = 'www.cloudflare.com';
+	const probePort = 443;
+	// 出站名模式：走指定出站代理探测
+	if (config.proxyipOutbound) {
+		const ob = resolveOutbound(config, config.proxyipOutbound);
+		if (!ob || typeof ob === 'string') {
+			return { ok: false, mode: 'outbound', error: `出站 ${config.proxyipOutbound} 不存在，请检查出站配置` };
+		}
+		const t0 = Date.now();
+		let remote = null;
+		try {
+			remote = await handleTcpOutbound({
+				config, outbound: ob, addressType: 2, addressRemote: host,
+				portRemote: probePort, rawClientData: makeProbeRequest(host, probePort), log, isUDP: false,
+			});
+		} catch (e) {
+			return { ok: false, mode: 'outbound', outbound: config.proxyipOutbound, error: `出站连接失败: ${e.message}` };
+		}
+		if (!remote) {
+			return { ok: false, mode: 'outbound', outbound: config.proxyipOutbound, error: '出站连接失败或无响应' };
+		}
+		const end = await readUntilHeader(remote, PROBE_TIMEOUT);
+		closeRemote(remote);
+		if (end === null) {
+			return { ok: false, mode: 'outbound', outbound: config.proxyipOutbound, error: '连接超时或无响应' };
+		}
+		return { ok: true, latency: end - t0, mode: 'outbound', outbound: config.proxyipOutbound };
+	}
 	if (!config.proxyipHost) {
 		return { ok: false, error: '未配置 proxyip，请先在系统设置中填写' };
 	}
-	const host = 'www.cloudflare.com';
-	const probePort = 443;
 	const t0 = Date.now();
 	let socket = null;
 	try {
@@ -286,7 +319,7 @@ export async function testProxyIp(config, log) {
 	if (end === null) {
 		return { ok: false, error: '连接超时或无响应' };
 	}
-	return { ok: true, latency: end - t0, endpoint: `${config.proxyipHost}:${config.proxyipPort || 443}` };
+	return { ok: true, latency: end - t0, mode: 'proxyip', endpoint: `${config.proxyipHost}:${config.proxyipPort || 443}` };
 }
 
 /**
