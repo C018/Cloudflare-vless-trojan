@@ -85,7 +85,7 @@ export class ProxySessionDO {
 			bytes = new TextEncoder().encode(message);
 		}
 		if (!bytes || bytes.byteLength === 0) return;
-		console.log(`[ws-do] webSocketMessage fired, len=${bytes.byteLength}`);
+		// 注意：此处禁止每帧打日志——大流量下载时每帧 console.log 会同步拖慢 DO 事件循环，严重拉低吞吐
 		this.io.feed(bytes);
 	}
 

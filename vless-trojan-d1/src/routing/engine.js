@@ -157,15 +157,30 @@ export async function matchParsedRule(parsed, addressRemote, isIP, env) {
  * @param {string} addressRemote
  * @returns {Promise<{outbound:string, rule:Object|null}>} outbound: direct/reject/出站名
  */
+const ROUTE_CACHE_TTL = 60_000;
+const ROUTE_CACHE_MAX = 10_000;
+const routeCache = new Map(); // `${addressType}:${domain/ip小写}` -> { outbound, rule, ts }
+
 export async function decideRoute(config, addressType, addressRemote) {
+	const cacheKey = `${addressType}:${addressRemote.toLowerCase()}`;
+	const hit = routeCache.get(cacheKey);
+	if (hit && Date.now() - hit.ts < ROUTE_CACHE_TTL) {
+		return { outbound: hit.outbound, rule: hit.rule };
+	}
 	const isIP = addressType === 1 || addressType === 3;
-	for (const rule of config.routingRules) {
-		const parsed = parseRule(rule.rule);
+	let outbound = config.defaultOutbound || 'direct';
+	let rule = null;
+	for (const r of config.routingRules) {
+		const parsed = parseRule(r.rule);
 		if (!parsed) continue;
-		const hit = await matchParsedRule(parsed, addressRemote, isIP, config.env);
-		if (hit) {
-			return { outbound: rule.outbound || 'direct', rule };
+		const h = await matchParsedRule(parsed, addressRemote, isIP, config.env);
+		if (h) {
+			outbound = r.outbound || 'direct';
+			rule = r;
+			break;
 		}
 	}
-	return { outbound: config.defaultOutbound || 'direct', rule: null };
+	if (routeCache.size >= ROUTE_CACHE_MAX) routeCache.clear();
+	routeCache.set(cacheKey, { outbound, rule, ts: Date.now() });
+	return { outbound, rule };
 }

@@ -12,7 +12,7 @@
  * - 写入经 promise chain 串行化，保证字节顺序与背压传播。
  */
 
-export const COALESCE_HIGH_WATER_MARK = 16384; // 16KB
+export const COALESCE_HIGH_WATER_MARK = 32 * 1024; // 32KB：大流量场景减少一半帧数，交互型连接已被上层检测禁用合并器，无延迟代价
 export const COALESCE_FLUSH_DELAY_MS = 20;
 
 /**

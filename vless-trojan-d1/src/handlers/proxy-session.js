@@ -149,6 +149,10 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let fallbackDone = false;
 	// 上行首包直通标记（换路时重置，保证新链路首包也直通）
 	let upGotFirst = false;
+	// 上行快速交互判定：非首包且累计上行 < 4KB → 判定为连续小请求（测速多轮/API 轮询），
+	// 立即禁用上行合并器直通，不必等到 INTERACTIVE_WINDOW_MS 时间窗口；只影响上行，下行仍按窗口判定保护大流量
+	let upInteractive = false;
+	const UP_INTERACTIVE_BYTES = 4096;
 	let writer = remoteSocket.writable.getWriter();
 	// 上行合并器：客户端 → 出站代理，小包合并降低出站 ws.send / TCP 写频率
 	let upCoalescer = createCoalescer((d) => writer.write(d), { log });
@@ -223,7 +227,14 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 					await writer.write(chunk);
 				} else {
 					maybeDisableCoalescer();
-					if (interactive) {
+					// 上行快速交互判定：连续小请求直接直通，不排队
+					if (!upInteractive && upBytes < UP_INTERACTIVE_BYTES) {
+						upInteractive = true;
+						log(`upstream fast-interactive (${upBytes}B cumulative), up coalescer disabled`);
+						await upCoalescer.flush();
+						upCoalescer.destroy();
+					}
+					if (interactive || upInteractive) {
 						await writer.write(chunk);
 					} else {
 						upCoalescer.push(chunk);
