@@ -279,7 +279,27 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 			// 改为单缓冲原地追加，总拷贝 O(N)（扩容次数 2 倍封顶）。
 			let accBuf = null;
 			let accLen = 0;
+			// 累积兜底 flush 定时器：进入累积后 arm 一次，MERGE_FLUSH_TIMEOUT 到期直接 flush
+			// 累积（尾包兜底）。原实现 acc 非空时每帧 new Promise + 每帧 setTimeout/clearTimeout
+			// + 每帧 {tag,...} 包装对象（高吞吐小帧下载时每秒数百上千次 timer 创建/清理，
+			// 放大上下文切换与 GC 压力）；改为单次 arm 的持久 timer，仅累积状态变化时操作，
+			// timer 到期在事件循环中直接 flush，无需等待挂起的 read 返回。
+			let flushTimer = null;
+			const armFlushTimer = () => {
+				if (flushTimer) return;
+				flushTimer = setTimeout(() => {
+					flushTimer = null;
+					if (accLen > 0) {
+						const chunk = accBuf.subarray(0, accLen);
+						// 先置空再写：write 为异步 fire-and-forget，置空后循环续帧不会被旧引用覆盖
+						accBuf = null;
+						accLen = 0;
+						io.write(chunk).catch(() => { /* ignore */ });
+					}
+				}, MERGE_FLUSH_TIMEOUT);
+			};
 			const flushAcc = async () => {
+				if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 				if (accLen > 0) {
 					await io.write(accBuf.subarray(0, accLen));
 					// 置空让旧 buffer 可被回收；平台 send 后若异步引用，也不再被写入覆盖
@@ -307,84 +327,39 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 					bytesSinceYield = 0;
 					await new Promise((r) => setTimeout(r, 0));
 				}
-				if (accLen > 0) {
-					// 已在累积：read 带超时兜底（acc 非空时每帧一个 timer，仅小帧合并阶段产生）
-					const rp = reader.read().then((r) => ({ tag: 'read', done: r.done, value: r.value }));
-					let tpTimer = null;
-					const tp = new Promise((res) => { tpTimer = setTimeout(() => res({ tag: 'timeout' }), MERGE_FLUSH_TIMEOUT); });
-					const result = await Promise.race([rp, tp]);
-					// 无论谁先返回都清理 timer：read 先返回时若不清理，每个小帧会泄漏一个
-					// 15ms 定时器，高吞吐下堆积成百上千个悬空 timer，放大上下文切换开销
-					clearTimeout(tpTimer);
-					if (result.tag === 'timeout') {
-						// 数据流中断：先 flush 累积，再等待本次已挂起的 read 返回。
-						// 严禁在此 continue 后再次 reader.read()——同一 reader 同时只允许一个
-						// pending read，二次调用抛 TypeError，会被外层 catch 静默吞掉并终止
-						// 下行转发，导致连接下行永久停滞（1.0.50 大几百 ms 延迟回归的根因）。
+				// 统一直读（不构造包装对象，避免每帧分配）；尾包兜底由 armFlushTimer 承担：
+				// 累积超过 MERGE_FLUSH_TIMEOUT 未达 target 时由 timer 在事件循环中直接 flush。
+				const { done, value } = await reader.read();
+				if (done) {
+					// EOF：flush 剩余累积并退出
+					await flushAcc();
+					downFinished = true;
+					break;
+				}
+				if (!value || value.byteLength === 0) continue;
+				gotFirst = true;
+				downBytes += value.byteLength;
+				bytesSinceYield += value.byteLength;
+				lastActivity = Date.now();
+				if (Date.now() < interactiveUntil) {
+					// 交互窗口内：flush 累积 + 小帧直通，不进入合并（消除交互往返被合并窗拖累）
+					await flushAcc();
+					await io.write(value);
+					continue;
+				}
+				if (accLen + value.byteLength <= MERGE_TARGET) {
+					appendAcc(value);
+					if (accLen >= MERGE_TARGET) {
+						// 达到合并目标：立即 flush（大帧直通不受影响）
 						await flushAcc();
-						const late = await rp;
-						if (late.done) {
-							downFinished = true;
-							break;
-						}
-						const lv = late.value;
-						if (lv && lv.byteLength > 0) {
-							gotFirst = true;
-							downBytes += lv.byteLength;
-							bytesSinceYield += lv.byteLength;
-							lastActivity = Date.now();
-							await io.write(lv);
-						}
-						continue;
-					}
-					if (result.done) {
-						await flushAcc();
-						downFinished = true;
-						break;
-					}
-					const value = result.value;
-					if (!value || value.byteLength === 0) continue;
-					gotFirst = true;
-					downBytes += value.byteLength;
-					bytesSinceYield += value.byteLength;
-					lastActivity = Date.now();
-					if (Date.now() < interactiveUntil) {
-						// 交互窗口内：flush 累积 + 小帧直通，不进入合并（消除交互往返被合并窗拖累）
-						await flushAcc();
-						await io.write(value);
-						continue;
-					}
-					if (accLen + value.byteLength <= MERGE_TARGET) {
-						appendAcc(value);
-						if (accLen >= MERGE_TARGET) await flushAcc();
 					} else {
-						// 累积已满且新帧放不下：先 flush 累积，新帧直通（大帧不进入合并，保持延迟）
-						await flushAcc();
-						await io.write(value);
+						// 进入累积：arm 兜底 flush 定时器（timer 到期直接 flush 尾包）
+						armFlushTimer();
 					}
 				} else {
-					// 未在累积：普通直读（不构造包装对象，避免每帧分配）
-					const { done, value } = await reader.read();
-					if (done) {
-						downFinished = true;
-						break;
-					}
-					if (!value || value.byteLength === 0) continue;
-					gotFirst = true;
-					downBytes += value.byteLength;
-					bytesSinceYield += value.byteLength;
-					lastActivity = Date.now();
-					if (Date.now() < interactiveUntil) {
-						// 交互窗口内：小帧直通不进入合并
-						await io.write(value);
-						continue;
-					}
-					if (value.byteLength >= MERGE_TARGET) {
-						await io.write(value);
-					} else {
-						// 小帧进入累积（拷贝到独立缓冲，避免平台复用 read 返回的 buffer）
-						appendAcc(value);
-					}
+					// 累积已满且新帧放不下：先 flush 累积，新帧直通（大帧不进入合并，保持延迟）
+					await flushAcc();
+					await io.write(value);
 				}
 			}
 			if (downFinished) break;

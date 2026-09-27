@@ -12,6 +12,14 @@ import { OUTBOUND_DIRECT, OUTBOUND_REJECT, OUTBOUND_SOCKS5, OUTBOUND_HTTP, OUTBO
 const DOH_CACHE_TTL = 300_000;
 const dohCache = new Map(); // hostname -> { ip, ts }
 
+/** DoH 多源端点（模块级复用，避免每调用重建数组） */
+const DOH_ENDPOINTS = [
+	'https://8.8.8.8/resolve',
+	'https://8.8.4.4/resolve',
+	'https://doh.pub/resolve',
+	'https://dns.alidns.com/resolve',
+];
+
 /**
  * DoH 解析域名（多源，优先域名型因为 Worker 环境 fetch IP 型可能不可达），
  * rtype='A' 返回首个 A 记录 IPv4，rtype='AAAA' 返回首个 AAAA 记录 IPv6；失败返回 null。
@@ -29,38 +37,40 @@ export async function resolveViaDoH(hostname, log, rtype = 'A', timeoutMs = 2500
 		return hit.ip;
 	}
 	// 多源 DoH：按用户偏好 DNS 不用 Cloudflare（移除 cloudflare-dns.com）；
-	// Google IP 型优先，国内非 CF 域名型兜底，失败自动切换下一源
-	const endpoints = [
-		'https://8.8.8.8/resolve',
-		'https://8.8.4.4/resolve',
-		'https://doh.pub/resolve',
-		'https://dns.alidns.com/resolve',
-	];
+	// Google IP 型优先，国内非 CF 域名型兜底。多源并行发起：任一源成功解析即 abort
+	// 其余源并返回，全部失败返回 null。原实现逐源串行等待（最坏 N×timeoutMs，
+	// 如 ipv4 优先 1200ms×4≈4.8s 才降级原生 DNS），并行把最坏等待收敛为单源超时。
 	const wantType = rtype === 'AAAA' ? 28 : 1;
 	const ipRe = rtype === 'AAAA' ? /^[0-9a-fA-F:]+$/ : /^\d{1,3}(\.\d{1,3}){3}$/;
-	let resolved = null;
-	for (const endpoint of endpoints) {
+	const controllers = [];
+	const tasks = DOH_ENDPOINTS.map((endpoint) => {
 		const ac = new AbortController();
+		controllers.push(ac);
 		const timer = setTimeout(() => ac.abort(), timeoutMs);
-		try {
-			const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${rtype}`;
-			const resp = await fetch(url, { headers: { accept: 'application/dns-json' }, signal: ac.signal });
-			if (resp.ok) {
-				const j = await resp.json();
-				const ans = Array.isArray(j.Answer) ? j.Answer : [];
-				const ip = ans.find((a) => a.type === wantType && ipRe.test(a.data))?.data;
-				if (ip) {
-					clearTimeout(timer);
-					resolved = ip;
-					break;
+		return (async () => {
+			try {
+				const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${rtype}`;
+				const resp = await fetch(url, { headers: { accept: 'application/dns-json' }, signal: ac.signal });
+				if (resp.ok) {
+					const j = await resp.json();
+					const ans = Array.isArray(j.Answer) ? j.Answer : [];
+					const ip = ans.find((a) => a.type === wantType && ipRe.test(a.data))?.data;
+					if (ip) {
+						// 本源成功：abort 其余源，避免空耗带宽与事件循环
+						for (const c of controllers) if (c !== ac) c.abort();
+						return ip;
+					}
 				}
+			} catch (e) {
+				// try other sources
+			} finally {
+				clearTimeout(timer);
 			}
-		} catch (e) {
-			// try next endpoint
-		} finally {
-			clearTimeout(timer);
-		}
-	}
+			return null;
+		})();
+	});
+	const results = await Promise.all(tasks);
+	const resolved = results.find((r) => r) || null;
 	if (resolved) dohCache.set(cacheKey, { ip: resolved, ts: Date.now() });
 	else log(`doh resolve failed: ${hostname} (${rtype})`);
 	return resolved;
@@ -342,10 +352,12 @@ async function directConnect(config, hostname, port, initialData, log) {
 	const cfIpLiteral = isIpLiteral && !hostname.includes(':') && isCloudflareIp(hostname);
 
 	// 未知域名（ip.sb / ip.skk.moe 等开 CF CDN 的站点）：DoH 预解析 IP 落 CF 地址段 → 同样按 CF 站点走 proxyip，
-	// 避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）；DoH 结果有 300s 缓存
+	// 避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）；DoH 结果有 300s 缓存。
+	// 判定用短超时（800ms）：这是建连路径上的附加增强判定，宁可快速放弃判定走直连
+	// （若真是 CF 站点，首包 5s 无响应回退 proxyip 兜底），也不让 DoH miss 时拖慢正常域名建连。
 	let cfResolvedDomain = false;
 	if (proxyipEnabled && !proxyipDown && !isIpLiteral && !cfDomain) {
-		const ip = await resolveViaDoH(hostname, log);
+		const ip = await resolveViaDoH(hostname, log, 'A', 800);
 		if (ip && isCloudflareIp(ip)) {
 			cfResolvedDomain = true;
 		}

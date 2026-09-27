@@ -21,6 +21,9 @@ const configCache = {
 	outbounds: { p: null, ts: 0 },
 	routingRules: { p: null, ts: 0 },
 };
+// 派生配置缓存（buildDerivedConfig 结果）：索引/映射/Set 由已缓存数据纯函数派生，
+// 与数据缓存同 TTL 复用，避免每个新连接重复 O(N) 构建。
+let derivedCache = { p: null, ts: 0 };
 
 /** 带缓存的加载：TTL 内命中直接复用；未命中时并发请求共享同一个 pending Promise 防止击穿 */
 function cachedLoad(key, loader) {
@@ -33,8 +36,10 @@ function cachedLoad(key, loader) {
 	return p;
 }
 
-/** 后台写接口成功后主动失效对应缓存，避免改动 30s 内不生效 */
+/** 后台写接口成功后主动失效对应缓存，避免改动 30s 内不生效；派生缓存依赖多表，一并清空 */
 export function invalidateConfigCache(kind) {
+	derivedCache.p = null;
+	derivedCache.ts = 0;
 	if (kind === 'all') {
 		for (const k of Object.keys(configCache)) { configCache[k].p = null; configCache[k].ts = 0; }
 		return;
@@ -245,38 +250,21 @@ export function parseEntries(settings) {
 }
 
 /**
- * 请求级配置对象：一次请求内只读一次 D1，统一缓存
- * @param {import('@cloudflare/workers-types').Request} request
- * @param {Object} env
- * @returns {Promise<Object>} config
+ * 构建请求级派生配置（纯函数，仅依赖已缓存数据，无 env/request/DB 副作用）。
+ * 从 settings / outbounds / users 派生的索引、映射与 Set 集中构建，供 createRequestConfig
+ * 以 30s TTL 缓存复用——原实现每个新连接都重建 uuidSet/passwordSet/vlessIndex/
+ * trojanIndex/outboundByName/inboundPathMap（用户量大时每次连接数百次 Map/Set 构建）。
+ * @param {Object} settings
+ * @param {Array} outbounds
+ * @param {Array} vlessUsers
+ * @param {Array} trojanUsers
  */
-export async function createRequestConfig(request, env, options = {}) {
-	const { DB } = env;
-	// 5 路缓存并行加载：settings / outbounds / vlessUsers / trojanUsers / routingRules
-	// 相互独立。串行 await 在缓存 miss（30s 一次或后台改动失效后）时叠加 4 次 D1 RTT，
-	// 并行可把首次建连配置加载延迟从 5 段串行收敛为 1 段（省约 40~200ms）；缓存命中路径
-	// 也省去 4 个串行 microtask。
-	const [settings, outbounds, vlessUsers, trojanUsers, routingRules] = await Promise.all([
-		cachedLoad('settings', () => loadSettings(DB)),
-		cachedLoad('outbounds', () => loadOutbounds(DB)),
-		cachedLoad('vlessUsers', () => loadVlessUsers(DB)),
-		cachedLoad('trojanUsers', () => loadTrojanUsers(DB)),
-		cachedLoad('routingRules', () => loadRoutingRules(DB)),
-	]);
-
+function buildDerivedConfig(settings, outbounds, vlessUsers, trojanUsers) {
 	const wsPath = settings.ws_path || DEFAULT_WS_PATH;
 	const entryTransport = settings.entry_transport || INBOUND_TRANSPORT_DEFAULT;
 	const defaultOutbound = settings.default_outbound || OUTBOUND_DIRECT;
 	// 出站地址族优先级：ipv4（默认，DoH A 优先）/ ipv6（DoH AAAA 优先）/ auto（原生 DNS 优先）
 	const ipPreference = settings.ip_preference || 'ipv4';
-	let adminPasswordHash = settings.admin_password_hash || '';
-	let adminTempPassword = null;
-	// 仅后台入口生成初始密码；避免伪装页/订阅等路由提前触发生成，导致 /admin 不再展示初始密码
-	if (!adminPasswordHash && options.ensureAdmin) {
-		const ensured = await ensureAdminPassword(DB);
-		adminPasswordHash = ensured.hash;
-		adminTempPassword = ensured.tempPassword;
-	}
 	const proxyipRaw = settings.proxyip || '';
 	// proxyip：可填 IP 或域名，支持 [host:port] 或裸 host（默认 443），也可直接填出站名（该出站代理出站），
 	// 仅默认出站 direct 时生效
@@ -307,16 +295,6 @@ export async function createRequestConfig(request, env, options = {}) {
 	const entrySni = entries.length ? entries[0].sni : '';
 	const entryWsHost = entries.length ? entries[0].wsHost : '';
 
-	// 到期流量重置（请求级幂等 + 30s 节流：traffic_reset_at 已过期才清零，避免每连接全量扫描）
-	const nowReset = Date.now();
-	if (nowReset - lastTrafficResetAt >= TRAFFIC_RESET_INTERVAL) {
-		await Promise.all([
-			resetExpiredTraffic(DB, vlessUsers, 'vless_users'),
-			resetExpiredTraffic(DB, trojanUsers, 'trojan_users'),
-		]);
-		lastTrafficResetAt = nowReset;
-	}
-
 	// 入站路径映射：全局 wsPath + 各用户自定义 path（含各自 /Tun grpc 后缀）
 	const inboundPathMap = buildInboundPathMap(wsPath, vlessUsers, trojanUsers);
 
@@ -329,31 +307,22 @@ export async function createRequestConfig(request, env, options = {}) {
 	for (const u of trojanUsers) trojanIndex[u.password] = u;
 
 	return {
-		env,
-		settings,
 		wsPath,
 		entryTransport,
 		defaultOutbound,
-		adminPasswordHash,
-		adminTempPassword,
+		ipPreference,
+		adminPasswordHash: settings.admin_password_hash || '',
 		proxyipHost,
 		proxyipPort,
-		// proxyip 出站名模式：非空时 CF 目标走该出站代理出站（替代 proxyipHost 裸连）
 		proxyipOutbound,
 		// proxyip 仅当默认出站为 direct（cloudflare:sockets）时生效
 		proxyipDisabled: defaultOutbound !== OUTBOUND_DIRECT,
-		// 出站地址族优先级：ipv4 / ipv6 / auto
-		ipPreference,
 		udpOutbound,
 		entryHost,
 		entryPort,
 		entrySni,
 		entryWsHost,
 		entries,
-		vlessUsers,
-		trojanUsers,
-		outbounds,
-		routingRules,
 		vlessIndex,
 		trojanIndex,
 		// 单个 uuid 校验集合（快速查找）
@@ -363,6 +332,103 @@ export async function createRequestConfig(request, env, options = {}) {
 		outboundByName: outbounds.reduce((m, o) => { m[o.name] = o; return m; }, {}),
 		// 入站路径 → 允许凭据作用域（全类型自动入站分发依据）
 		inboundPathMap,
+	};
+}
+
+/**
+ * 请求级配置对象：一次请求内只读一次 D1，统一缓存
+ * @param {import('@cloudflare/workers-types').Request} request
+ * @param {Object} env
+ * @returns {Promise<Object>} config
+ */
+export async function createRequestConfig(request, env, options = {}) {
+	const { DB } = env;
+	// 5 路缓存并行加载：settings / outbounds / vlessUsers / trojanUsers / routingRules
+	// 相互独立。串行 await 在缓存 miss（30s 一次或后台改动失效后）时叠加 4 次 D1 RTT，
+	// 并行可把首次建连配置加载延迟从 5 段串行收敛为 1 段（省约 40~200ms）；缓存命中路径
+	// 也省去 4 个串行 microtask。
+	const [settings, outbounds, vlessUsers, trojanUsers, routingRules] = await Promise.all([
+		cachedLoad('settings', () => loadSettings(DB)),
+		cachedLoad('outbounds', () => loadOutbounds(DB)),
+		cachedLoad('vlessUsers', () => loadVlessUsers(DB)),
+		cachedLoad('trojanUsers', () => loadTrojanUsers(DB)),
+		cachedLoad('routingRules', () => loadRoutingRules(DB)),
+	]);
+
+	// 派生配置（索引/映射/Set）：30s TTL 缓存复用（见 buildDerivedConfig），
+	// 避免每个新连接重复 O(N) 构建；后台写接口失效缓存时连带清空。
+	let derived;
+	const dNow = Date.now();
+	if (derivedCache.p && dNow - derivedCache.ts < CONFIG_CACHE_TTL) {
+		derived = await derivedCache.p;
+	} else {
+		const dp = Promise.resolve().then(() => buildDerivedConfig(settings, outbounds, vlessUsers, trojanUsers));
+		derivedCache.p = dp;
+		derivedCache.ts = dNow;
+		try {
+			derived = await dp;
+		} catch (e) {
+			// 派生构建异常：清缓存避免坏结果滞留 30s（下次连接重新构建）
+			derivedCache.p = null;
+			derivedCache.ts = 0;
+			throw e;
+		}
+	}
+
+	let adminPasswordHash = derived.adminPasswordHash;
+	let adminTempPassword = null;
+	// 仅后台入口生成初始密码；避免伪装页/订阅等路由提前触发生成，导致 /admin 不再展示初始密码
+	if (!adminPasswordHash && options.ensureAdmin) {
+		const ensured = await ensureAdminPassword(DB);
+		adminPasswordHash = ensured.hash;
+		adminTempPassword = ensured.tempPassword;
+	}
+
+	// 到期流量重置（请求级幂等 + 30s 节流：traffic_reset_at 已过期才清零，避免每连接全量扫描）
+	const nowReset = Date.now();
+	if (nowReset - lastTrafficResetAt >= TRAFFIC_RESET_INTERVAL) {
+		await Promise.all([
+			resetExpiredTraffic(DB, vlessUsers, 'vless_users'),
+			resetExpiredTraffic(DB, trojanUsers, 'trojan_users'),
+		]);
+		lastTrafficResetAt = nowReset;
+	}
+
+	return {
+		env,
+		settings,
+		wsPath: derived.wsPath,
+		entryTransport: derived.entryTransport,
+		defaultOutbound: derived.defaultOutbound,
+		adminPasswordHash,
+		adminTempPassword,
+		proxyipHost: derived.proxyipHost,
+		proxyipPort: derived.proxyipPort,
+		// proxyip 出站名模式：非空时 CF 目标走该出站代理出站（替代 proxyipHost 裸连）
+		proxyipOutbound: derived.proxyipOutbound,
+		// proxyip 仅当默认出站为 direct（cloudflare:sockets）时生效
+		proxyipDisabled: derived.proxyipDisabled,
+		// 出站地址族优先级：ipv4 / ipv6 / auto
+		ipPreference: derived.ipPreference,
+		udpOutbound: derived.udpOutbound,
+		entryHost: derived.entryHost,
+		entryPort: derived.entryPort,
+		entrySni: derived.entrySni,
+		entryWsHost: derived.entryWsHost,
+		entries: derived.entries,
+		vlessUsers,
+		trojanUsers,
+		outbounds,
+		routingRules,
+		vlessIndex: derived.vlessIndex,
+		trojanIndex: derived.trojanIndex,
+		// 单个 uuid 校验集合（快速查找）
+		uuidSet: derived.uuidSet,
+		passwordSet: derived.passwordSet,
+		// 出站按 name 索引
+		outboundByName: derived.outboundByName,
+		// 入站路径 → 允许凭据作用域（全类型自动入站分发依据）
+		inboundPathMap: derived.inboundPathMap,
 	};
 }
 
