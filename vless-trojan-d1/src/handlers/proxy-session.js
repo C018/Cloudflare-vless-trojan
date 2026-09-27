@@ -11,6 +11,7 @@ import { processVlessHeader } from '../protocol/vless.js';
 import { processTrojanHeader, isTrojanLike } from '../protocol/trojan.js';
 import { handleTcpOutbound, resolveOutbound, directRouteMeta, connectViaProxyIp, markProxyIpDown } from '../outbound/tcp.js';
 import { vlessOutboundConnect } from '../outbound/vless.js';
+import { wrapUdpFrame } from '../outbound/udp.js';
 import { decideRoute } from '../routing/engine.js';
 
 // VLESS 空包帧（0x00 0x00）：服务端握手响应头与心跳保活帧内容相同，复用同一常量避免每连接/每心跳分配
@@ -433,7 +434,21 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 		return;
 	}
 
-	const firstFrame = firstPayload && firstPayload.length > 0 ? firstPayload : new Uint8Array([0, 0]);
+	// 出站传输类型：raw 为 VLESS UDP over TCP（流式，每个数据报需 [2B len] 长度前缀帧），
+	// ws/grpc/httpupgrade/h2 为消息型传输（每个消息即一个 UDP 数据报，无需前缀）。
+	// 与 vlessOutboundConnect 内部默认值逻辑保持一致（transport 缺省 'ws'）。
+	const udpTransport = (vlessOb.transport || 'ws').trim().toLowerCase();
+	const isRawUdp = udpTransport === 'raw';
+
+	// 首包帧：raw 需 wrap [2B len] 前缀（否则远端把裸数据报头 2 字节当长度前缀，协议错位）；
+	// 消息型传输直通数据报本身。首包无数据时：raw 发 len=0 空帧（远端丢弃，安全）；
+	// 消息型只发 VLESS header，严禁复用 TCP 心跳帧 [0x00 0x00]——
+	// UDP over WS 每个消息即数据报，2 字节会被当作 UDP 载荷转发给目标（垃圾包）。
+	const hasFirstData = firstPayload && firstPayload.length > 0;
+	const firstFrame = isRawUdp
+		? (hasFirstData ? wrapUdpFrame(firstPayload) : new Uint8Array([0, 0]))
+		: (hasFirstData ? firstPayload : new Uint8Array(0));
+
 	const conn = await vlessOutboundConnect(
 		{ address: vlessOb.address, port: Number(vlessOb.port), uuid: vlessOb.uuid, path: vlessOb.path, tls: !!vlessOb.tls, sni: vlessOb.sni || '', transport: vlessOb.transport || 'ws' },
 		0x02, addressType, addressRemote, portRemote, firstFrame, log
@@ -446,7 +461,36 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 
 	let upBytes = 0;
 	let downBytes = 0;
+	let closed = false;
+	let outReader = null;
 	const writer = conn.writable.getWriter();
+
+	// UDP 会话空闲兜底清理：平台约 30s 无数据活动会断 WS（客户端自行重连），
+	// 此处兜底清理长时间空闲且平台未回收的出站连接，防僵尸会话占资源。
+	// 不做应用层心跳：UDP over WS 每个消息即数据报，空帧会被当作 UDP 载荷转发给目标
+	// （语义风险，TCP 心跳帧不可复用）；以空闲超时 + EOF 联动关闭作为稳定性兜底。
+	const UDP_IDLE_TIMEOUT = 300000; // 5 分钟无上下行数据 → 主动关闭会话
+	let lastActivity = Date.now();
+	const idleTimer = setInterval(() => {
+		if (closed) return;
+		if (Date.now() - lastActivity >= UDP_IDLE_TIMEOUT) {
+			log(`udp session idle ${UDP_IDLE_TIMEOUT}ms, closing`);
+			closeConn();
+		}
+	}, 15000);
+
+	// 关闭会话：出站 write 端 close（联动 ws close / socket 半关）+ read 端 cancel
+	// （确保下行循环退出）+ 客户端 io close（使挂起的 io.read 返回 null，上行循环退出）。
+	// 任一路径触发均收敛到同一清理点，防止半挂起连接泄漏。
+	const closeConn = () => {
+		if (closed) return;
+		closed = true;
+		clearInterval(idleTimer);
+		try { writer.releaseLock(); } catch (e) { /* ignore */ }
+		try { conn.writable.close().catch(() => { /* ignore */ }); } catch (e) { /* ignore */ }
+		try { if (outReader) outReader.cancel().catch(() => { /* ignore */ }); } catch (e) { /* ignore */ }
+		try { io.close(); } catch (e) { /* ignore */ }
+	};
 
 	const upstream = (async () => {
 		try {
@@ -455,30 +499,70 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk === null || chunk === undefined) break;
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
-				await writer.write(chunk);
+				lastActivity = Date.now();
+				// raw（UDP over TCP）：每数据报加 [2B len] 前缀再写流；消息型传输直通
+				await writer.write(isRawUdp ? wrapUdpFrame(chunk) : chunk);
 			}
 		} catch (e) {
 			log(`udp upstream read error: ${e.message}`);
 		}
+		// 客户端 EOF：联动关闭出站连接，使下行循环退出（防半挂起泄漏）
+		closeConn();
 	})();
 
 	try {
-		const outReader = conn.readable.getReader();
+		outReader = conn.readable.getReader();
+		let rawBuf = null;
+		let rawLen = 0;
 		while (true) {
 			const { done, value } = await outReader.read();
 			if (done) break;
-			if (value && value.byteLength > 0) {
-				downBytes += value.byteLength;
-				await io.write(value);
+			if (closed) break;
+			if (isRawUdp) {
+				// UDP over TCP：从远端流式响应拆 [2B len] 帧，逐帧作为数据报写回客户端。
+				// 动态扩容累积 + 游标拆帧，避免逐块重建数组的 O(N²) 拷贝（同 udp.js readUdpFrames）。
+				if (!value || value.byteLength === 0) continue;
+				const need = rawLen + value.byteLength;
+				if (!rawBuf) {
+					rawBuf = new Uint8Array(Math.max(need, 4096));
+				} else if (need > rawBuf.length) {
+					const nb = new Uint8Array(Math.max(rawBuf.length * 2, need));
+					nb.set(rawBuf.subarray(0, rawLen), 0);
+					rawBuf = nb;
+				}
+				rawBuf.set(value, rawLen);
+				rawLen = need;
+				let start = 0;
+				for (;;) {
+					if (rawLen - start < 2) break;
+					const flen = (rawBuf[start] << 8) | rawBuf[start + 1];
+					if (flen === 0) { start += 2; continue; }
+					if (rawLen - start < 2 + flen) break;
+					const frame = rawBuf.slice(start + 2, start + 2 + flen);
+					start += 2 + flen;
+					if (closed) break;
+					downBytes += frame.length;
+					lastActivity = Date.now();
+					try { await io.write(frame); } catch (e) { /* ignore */ }
+				}
+				if (start > 0) {
+					rawBuf.copyWithin(0, start, rawLen);
+					rawLen -= start;
+				}
+			} else {
+				// 消息型传输：每个 ws 消息即一个 UDP 数据报，直通写回（不能合并，保持数据报边界）
+				if (value && value.byteLength > 0) {
+					downBytes += value.byteLength;
+					lastActivity = Date.now();
+					await io.write(value);
+				}
 			}
 		}
 	} catch (e) {
 		log(`udp read error: ${e.message}`);
 	}
 
-	try { writer.releaseLock(); } catch (e) { /* ignore */ }
-	try { await conn.writable.close(); } catch (e) { /* ignore */ }
-	try { await io.close(); } catch (e) { /* ignore */ }
+	closeConn();
 	await upstream.catch(() => {});
 
 	recordTraffic(config, userRecord, kind, upBytes, downBytes, log);
