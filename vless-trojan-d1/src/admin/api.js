@@ -221,12 +221,14 @@ export async function handleAdminApi(request, config, ctx) {
 	// ---- geo update / status ----
 	if (resource === 'geo' && segments[3] === 'update' && method === 'POST') {
 		try {
-			// 互斥锁：同一时间仅允许一个更新任务（带 10 分钟 TTL，防止队列重试耗尽/异常退出后锁卡死）
+			// 互斥锁：同一时间仅允许一个更新任务。TTL 7200s（2 小时）：geosite 动态全量枚举后
+			// 单次更新（约 1589 分类）耗时长，锁须覆盖任务全程，避免任务未完成锁先过期、
+			// 用户再次点击被放行并重写初始进度状态（引发"队列消费者未生效"误报）
 			const updating = await GEO_KV.get('geo:updating');
 			if (updating === '1') {
 				return json({ ok: true, started: false, updating: true });
 			}
-			await GEO_KV.put('geo:updating', '1', { expirationTtl: 600 });
+			await GEO_KV.put('geo:updating', '1', { expirationTtl: 7200 });
 			// 优先走 Workers Queues：consumer 独立执行（不受请求 30s 限制，失败自动重试）
 			if (config.env && config.env.GEO_QUEUE && typeof config.env.GEO_QUEUE.send === 'function') {
 				await config.env.GEO_QUEUE.send({ kind: 'geo-update' });
@@ -370,14 +372,15 @@ async function handleCrud(method, id, crud, DB, request) {
 }
 
 // 内置默认 geo 分类清单（修复2：不再依赖 routing_rules 表）
-// geosite: v2fly/domain-list-community data/ 下常用分类（已剔除源站不存在的分类）
+// geosite: 运行时动态枚举 v2fly/domain-list-community data/ 下全部分类（见 listV2flyGeositeCategories），
+//          此白名单仅作枚举失败时的兜底，避免 cron 更新中断（已含 anthropic 等常用分类）
 // geoip:   SagerNet/sing-geoip rule-set 下 geoip-{category}.srs（该分支仅含国家/地区代码，
 //          此处取常用国家/地区；全部经源站验证存在）
 const DEFAULT_GEO_CATEGORIES = {
 	geosite: [
 		'cn', 'apple', 'google', 'microsoft', 'facebook', 'twitter', 'telegram',
 		'github', 'netflix', 'youtube', 'spotify', 'discord', 'tiktok', 'paypal',
-		'steam', 'cloudflare', 'openai', 'amazon', 'whatsapp', 'instagram',
+		'steam', 'cloudflare', 'openai', 'anthropic', 'amazon', 'whatsapp', 'instagram',
 		'linkedin', 'mozilla', 'adobe', 'speedtest', 'oracle', 'digitalocean',
 		'vultr', 'jetbrains', 'gitee', 'baidu', 'aliyun', 'tencent',
 		'jd', 'bilibili', 'douyin', 'zhihu', 'iqiyi', 'youku', 'xiaomi', 'huawei'
@@ -392,18 +395,27 @@ const DEFAULT_GEO_CATEGORIES = {
 };
 
 /**
- * 手动触发 geo 库更新：按内置默认分类清单全量更新并写 KV，返回真实计数。
+ * 手动触发 geo 库更新：全量更新并写 KV，返回真实计数。
  * 修复2：原实现从 routing_rules 表解析 geosite:/geoip: 分类，线上无此类规则时
- * total=0/updated=0；现改为不依赖现有规则，直接按 DEFAULT_GEO_CATEGORIES 全量更新。
+ * total=0/updated=0；现改为不依赖现有规则，直接按分类清单全量更新。
+ * geosite 分类运行时动态枚举 v2fly/domain-list-community data/ 下全量（白名单缺失的分类
+ * 如 anthropic 也能入库），枚举失败回退 DEFAULT_GEO_CATEGORIES.geosite；geoip 保持白名单。
  * DB 参数保留仅为兼容现有调用方签名（cron.js / api.js 均传 DB, GEO_KV）。
  * @returns {Promise<{updated:number, total:number, failed:string[]}>}
  */
 export async function updateGeo(DB, GEO_KV, onProgress) {
+	// geosite 分类：运行时动态枚举 v2fly/domain-list-community data/ 全量；枚举失败回退内置白名单
+	let geositeCategories = await listV2flyGeositeCategories();
+	if (!geositeCategories || geositeCategories.length === 0) {
+		geositeCategories = DEFAULT_GEO_CATEGORIES.geosite.slice();
+		console.log('[geo] v2fly category enumeration failed, fallback to DEFAULT_GEO_CATEGORIES.geosite');
+	}
 	const categories = {
-		geosite: new Set(DEFAULT_GEO_CATEGORIES.geosite),
-		geoip: new Set(DEFAULT_GEO_CATEGORIES.geoip)
+		geosite: geositeCategories,
+		geoip: DEFAULT_GEO_CATEGORIES.geoip
 	};
-	const totalCategories = DEFAULT_GEO_CATEGORIES.geosite.length + DEFAULT_GEO_CATEGORIES.geoip.length;
+	// 进度 total 基于动态枚举后的真实分类总数（geosite 动态数 + geoip 白名单数）
+	const totalCategories = categories.geosite.length + categories.geoip.length;
 	const notify = (patch) => {
 		if (typeof onProgress === 'function') {
 			try { onProgress(patch); } catch (e) { /* ignore */ }
@@ -450,7 +462,7 @@ export async function runGeoUpdateTask(DB, GEO_KV) {
 		return detail;
 	} catch (e) {
 		await save({ state: 'error', message: e.message || String(e), failed: [] }).catch(() => {});
-		// 失败时不清 geo:updating 锁：queue 路径由队列重试直至成功或 TTL(600s) 自动解锁；waitUntil/同步路径同理依赖 TTL 兜底
+		// 失败时不清 geo:updating 锁：queue 路径由队列重试直至成功或 TTL(7200s) 自动解锁；waitUntil/同步路径同理依赖 TTL 兜底
 		throw e;
 	}
 }
@@ -489,6 +501,62 @@ async function fetchCategory(type, category) {
 const V2FLY_GEO_BASE = 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/';
 const V2FLY_GEO_CDN = 'https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@master/data/';
 const GEO_MAX_ITEMS = 20000;
+
+/** 去除文件名扩展名（v2fly data/ 下文件多为无扩展名纯分类名） */
+function stripGeositeExt(name) {
+	const i = name.indexOf('.');
+	return i > 0 ? name.slice(0, i) : name;
+}
+
+/**
+ * 动态枚举 v2fly/domain-list-community data/ 目录下全部分类文件名。
+ * 优先 Git Trees API（recursive=1 一次返回全量 tree，过滤 data/ 下 type=blob 顶层文件，
+ * 取去 data/ 前缀与扩展名的文件名）；失败兜底 Contents API 列目录；两者均失败返回 null，
+ * 由调用方回退 DEFAULT_GEO_CATEGORIES.geosite 白名单，保证 cron 更新不中断。
+ * @returns {Promise<string[]|null>} 分类名数组（去重排序）；失败返回 null
+ */
+async function listV2flyGeositeCategories() {
+	// 主源：Git Trees API（一次获取全量 tree）
+	try {
+		const res = await fetch('https://api.github.com/repos/v2fly/domain-list-community/git/trees/master?recursive=1', {
+			headers: { 'User-Agent': 'vless-trojan-d1' },
+			cf: { cacheTtl: 86400 }
+		});
+		if (res.ok) {
+			const body = await res.json();
+			const tree = body && Array.isArray(body.tree) ? body.tree : [];
+			const cats = new Set();
+			for (const item of tree) {
+				if (!item || item.type !== 'blob' || typeof item.path !== 'string') continue;
+				if (!item.path.startsWith('data/')) continue;
+				const raw = item.path.slice(5); // 去 data/ 前缀
+				if (!raw || raw.includes('/')) continue; // 仅取 data/ 顶层文件
+				cats.add(stripGeositeExt(raw));
+			}
+			if (cats.size > 0) return [...cats].sort();
+		}
+	} catch (e) { /* fallthrough to contents API */ }
+	// 兜底：Contents API 列目录
+	try {
+		const res = await fetch('https://api.github.com/repos/v2fly/domain-list-community/contents/data', {
+			headers: { 'User-Agent': 'vless-trojan-d1' },
+			cf: { cacheTtl: 86400 }
+		});
+		if (res.ok) {
+			const list = await res.json();
+			if (Array.isArray(list)) {
+				const cats = new Set();
+				for (const item of list) {
+					if (!item || item.type !== 'file' || typeof item.name !== 'string') continue;
+					const name = stripGeositeExt(item.name);
+					if (name) cats.add(name);
+				}
+				if (cats.size > 0) return [...cats].sort();
+			}
+		}
+	} catch (e) { /* fallthrough */ }
+	return null;
+}
 
 async function fetchV2flyGeosite(category, visited) {
 	if (visited.has(category)) return [];

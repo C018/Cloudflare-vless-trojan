@@ -107,10 +107,24 @@ export default {
 	async queue(batch, env, ctx) {
 		for (const msg of batch.messages) {
 			try {
-				// runGeoUpdateTask 内部会写分阶段进度到 geo:update_status 并清理 geo:updating 锁
-				const detail = await runGeoUpdateTask(env.DB, env.GEO_KV);
-				console.log(`[queue] geo update done: ${detail.updated}/${detail.total} categories${detail.failed.length ? ', failed: ' + detail.failed.join('; ') : ''}`);
-				msg.ack();
+				// 幂等保护：消费前先检查 geo:update_busy 标记，若已有更新任务在执行则直接 ack 跳过，
+				// 防止任务未完成期间积压的重复消息各自触发一次全量（约 1589 分类）更新
+				const busy = await env.GEO_KV.get('geo:update_busy');
+				if (busy === '1') {
+					console.log('[queue] geo update already in progress, skip message');
+					msg.ack();
+					continue;
+				}
+				await env.GEO_KV.put('geo:update_busy', '1', { expirationTtl: 7200 });
+				try {
+					// runGeoUpdateTask 内部会写分阶段进度到 geo:update_status 并清理 geo:updating 锁
+					const detail = await runGeoUpdateTask(env.DB, env.GEO_KV);
+					console.log(`[queue] geo update done: ${detail.updated}/${detail.total} categories${detail.failed.length ? ', failed: ' + detail.failed.join('; ') : ''}`);
+					msg.ack();
+				} finally {
+					// 无论成功失败均清除 busy 标记，允许后续（重试/新入队）消息继续执行
+					await env.GEO_KV.put('geo:update_busy', '0').catch(() => {});
+				}
 			} catch (e) {
 				console.log(`[queue] geo update failed (will retry): ${e.message || e}`);
 				// 抛错 → 队列按 max_retries 重试；重试耗尽自动进死信队列

@@ -716,6 +716,14 @@ async function updateGeo(){
   line1.innerHTML = '提交更新请求…'; line2.innerHTML = ''; line3.innerHTML = '';
   try {
     const d = await api('/admin/api/geo/update',{method:'POST',body:'{}'});
+    if (d && d.started === false && d.updating) {
+      // 互斥锁拒绝：已有更新任务在进行中。仅提示、不覆盖当前进度、不启动轮询，
+      // 避免触发"队列消费者未生效"的 30s 无进展误报
+      line1.innerHTML = '<span class="geo-done">已有更新正在进行中，请稍候…</span>';
+      line2.innerHTML = '';
+      line3.innerHTML = '';
+      return;
+    }
     if (d && d.updating) {
       line1.innerHTML = '更新已启动，正在拉取规则库（约 1-3 分钟）…';
       pollGeoStatus();
@@ -757,11 +765,12 @@ async function pollGeoStatus(){
         line1.innerHTML = esc(p.message || '更新中…');
         line2.innerHTML = '进度：<b>'+step+'</b> / '+total+'（成功 '+(p.updated||0)+'，失败 '+((p.failed||[]).length)+'）';
         line3.innerHTML = p.current ? '当前：<span class="dim">'+esc(p.current)+'</span>' : '';
-        // 已入队但长时间无进展：提示消费者可能未生效（队列未创建 / consumer 未绑定 / 粘贴部署无队列）
+        // 全量枚举 geosite（约 1589 类）后单次更新耗时可能远超 30s，
+        // 只要 updating 锁仍存活即视为正常，超时仅温和提示等待，不再误报"队列消费者未生效"
         if (step === 0 && p.message === '已入队，等待消费者执行…') {
           if (idleStart === null) idleStart = Date.now();
           if (Date.now() - idleStart > 30000) {
-            line3.innerHTML = '<span class="geo-done err">队列消费者未生效：请确认已创建队列（wrangler queue create cf-vless-trojan-d1-geo-update / -dlq）且 wrangler.toml 已配置 producer/consumer；控制台粘贴部署不支持队列，请改用 wrangler deploy</span>';
+            line3.innerHTML = '<span class="dim">更新已进入后台，请耐心等待…</span>';
           }
         } else {
           idleStart = null;
