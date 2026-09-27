@@ -25,6 +25,12 @@ const MERGE_FLUSH_TIMEOUT = 15; // 累积中若数据流中断超过该时长，
 const YIELD_BYTES = 2 * 1024 * 1024; // 每转发 2MB 让出一次事件循环：让上行消息（客户端 ACK/控制帧）、
 // 心跳与平台 CPU 计量插队，防止单线程连续转发链饿死上行事件导致目标服务器 TCP 窗口坍缩、或触发平台限流断连
 
+// 交互流量直通检测：上行帧间隔超过该阈值视为新的交互请求（网页点击/新请求等），
+// 打开一个交互窗口；窗口内下行小帧不进入合并器直接直通，消除交互式流量被 15ms
+// 合并窗拖累的往返延迟。下载/流媒体场景 ACK 与控制帧间隔远小于阈值，不会误触发。
+const INTERACTIVE_GAP_MS = 100; // 上行两帧间隔 > 100ms → 判定为新交互请求
+const INTERACTIVE_WINDOW_MS = 300; // 交互窗口：此后 300ms 内下行小帧直通不合并
+
 /**
  * 处理一次代理会话（io 已就绪）
  * @param {Object} config
@@ -146,6 +152,9 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let upBytes = 0;
 	let downBytes = 0;
 	let closed = false;
+	// 交互直通窗口状态：upstream 循环写入，downstream 循环读取（JS 单线程无竞态）
+	let lastUpstreamFrameAt = Date.now();
+	let interactiveUntil = 0;
 	// VLESS 空包心跳保活：CF Workers 平台约 30s 无数据活动即断开 WebSocket，
 	// 空闲超过阈值时向客户端发空包帧（0x00 0x00），保持连接活跃（xray/sing-box 客户端原生支持空包探测）。
 	const HEARTBEAT_INTERVAL = 15000;
@@ -207,6 +216,12 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
 				lastActivity = Date.now();
+				// 交互检测：上行帧间隔 > INTERACTIVE_GAP_MS → 打开交互窗口（下行小帧直通不合并）
+				const now = Date.now();
+				if (now - lastUpstreamFrameAt > INTERACTIVE_GAP_MS) {
+					interactiveUntil = now + INTERACTIVE_WINDOW_MS;
+				}
+				lastUpstreamFrameAt = now;
 				await writer.write(chunk);
 			}
 		} catch (e) {
@@ -333,6 +348,12 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 					downBytes += value.byteLength;
 					bytesSinceYield += value.byteLength;
 					lastActivity = Date.now();
+					if (Date.now() < interactiveUntil) {
+						// 交互窗口内：flush 累积 + 小帧直通，不进入合并（消除交互往返被合并窗拖累）
+						await flushAcc();
+						await io.write(value);
+						continue;
+					}
 					if (accLen + value.byteLength <= MERGE_TARGET) {
 						appendAcc(value);
 						if (accLen >= MERGE_TARGET) await flushAcc();
@@ -353,6 +374,11 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 					downBytes += value.byteLength;
 					bytesSinceYield += value.byteLength;
 					lastActivity = Date.now();
+					if (Date.now() < interactiveUntil) {
+						// 交互窗口内：小帧直通不进入合并
+						await io.write(value);
+						continue;
+					}
 					if (value.byteLength >= MERGE_TARGET) {
 						await io.write(value);
 					} else {

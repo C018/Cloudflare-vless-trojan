@@ -267,6 +267,8 @@ export async function createRequestConfig(request, env, options = {}) {
 	const wsPath = settings.ws_path || DEFAULT_WS_PATH;
 	const entryTransport = settings.entry_transport || INBOUND_TRANSPORT_DEFAULT;
 	const defaultOutbound = settings.default_outbound || OUTBOUND_DIRECT;
+	// 出站地址族优先级：ipv4（默认，DoH A 优先）/ ipv6（DoH AAAA 优先）/ auto（原生 DNS 优先）
+	const ipPreference = settings.ip_preference || 'ipv4';
 	let adminPasswordHash = settings.admin_password_hash || '';
 	let adminTempPassword = null;
 	// 仅后台入口生成初始密码；避免伪装页/订阅等路由提前触发生成，导致 /admin 不再展示初始密码
@@ -340,6 +342,8 @@ export async function createRequestConfig(request, env, options = {}) {
 		proxyipOutbound,
 		// proxyip 仅当默认出站为 direct（cloudflare:sockets）时生效
 		proxyipDisabled: defaultOutbound !== OUTBOUND_DIRECT,
+		// 出站地址族优先级：ipv4 / ipv6 / auto
+		ipPreference,
 		udpOutbound,
 		entryHost,
 		entryPort,

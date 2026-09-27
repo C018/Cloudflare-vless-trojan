@@ -407,9 +407,20 @@ async function runRouteTest(){
   if (btn){ btn.disabled = false; btn.textContent = '测试'; }
 }
 
+// 列表页 5s TTL 缓存：切 tab 不重复请求，减少 UI 感知延迟；编辑/删除/新增成功后失效
+const LIST_CACHE_TTL = 5000;
+let listCache = { key:'', ts:0, rows:null };
+
 async function loadList(){
   const def = state.schema;
-  const rows = await api('/admin/api/'+def.api);
+  const now = Date.now();
+  let rows;
+  if (listCache.key === def.api && listCache.rows && now - listCache.ts < LIST_CACHE_TTL) {
+    rows = listCache.rows;
+  } else {
+    rows = await api('/admin/api/'+def.api);
+    listCache = { key: def.api, ts: now, rows };
+  }
   state.records = rows;
   const tbody = $('#tbody');
   tbody.innerHTML = rows.map((r,idx)=>{
@@ -518,14 +529,14 @@ async function saveModal(){
   try {
     if (state.editing) await api('/admin/api/'+def.api+'/'+state.editing.id,{method:'PUT',body:JSON.stringify(body)});
     else await api('/admin/api/'+def.api,{method:'POST',body:JSON.stringify(body)});
-    closeModal(); await loadList(); toast('已保存');
+    closeModal(); listCache = { key:'', ts:0, rows:null }; await loadList(); toast('已保存');
   } catch(e){ toast(e.message); }
 }
 
 async function delRow(idx){
   const def = state.schema; const r = state.records[idx];
   if (!confirm('确认删除该记录？')) return;
-  try { await api('/admin/api/'+def.api+'/'+r.id,{method:'DELETE'}); await loadList(); toast('已删除'); }
+  try { await api('/admin/api/'+def.api+'/'+r.id,{method:'DELETE'}); listCache = { key:'', ts:0, rows:null }; await loadList(); toast('已删除'); }
   catch(e){ toast(e.message); }
 }
 
@@ -600,6 +611,13 @@ async function loadSettings(){
       '</div>'+
       '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
       '<div class="card">'+
+      '<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">出站 IP 协议优先级</label>'+
+      '<select id="s_ip_preference" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">'+
+        '<option value="ipv4"'+(s.ip_preference==='ipv6'||s.ip_preference==='auto'?'':'selected')+'>IPv4 优先（默认）</option>'+
+        '<option value="ipv6"'+(s.ip_preference==='ipv6'?'selected':'')+'>IPv6 优先</option>'+
+        '<option value="auto"'+(s.ip_preference==='auto'?'selected':'')+'>自动（原生 DNS）</option>'+
+      '</select>'+
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px">ipv4=出站固定走 IPv4；ipv6=出站 IPv6 优先；auto=交给 Cloudflare 运行时原生 DNS（可能随机 v4/v6）</div>'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
       '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
       '<div id="testResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
@@ -610,7 +628,7 @@ async function loadSettings(){
 
 async function saveSettings(){
   const body = {};
-  document.querySelectorAll('#mainContent input[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
+  document.querySelectorAll('#mainContent input[id^=s_], #mainContent select[id^=s_]').forEach(el=>{ body[el.id.slice(2)] = el.value; });
   try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)}); toast('设置已保存'); }
   catch(e){ toast(e.message); }
 }

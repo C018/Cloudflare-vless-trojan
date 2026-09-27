@@ -131,11 +131,15 @@ export async function handleAdminApi(request, config, ctx) {
 			// 白名单：仅允许写入受支持的设置项，屏蔽已废弃的 CDN/优选/entry_transport 等字段。
 			// 入站已改为全类型自动（ws/grpc/h2），entry_transport 不再参与入站分发，禁止再写入。
 			const ALLOWED_SETTINGS = new Set([
-				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound',
+				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound', 'ip_preference',
 				'disguise_title', 'disguise_subtitle',
 				'entry_host', 'entry_port', 'entry_sni', 'entry_ws_host', 'entry_list',
 				'admin_password_hash', 'admin_cookie_secret',
 			]);
+			// ip_preference 仅允许 ipv4 / ipv6 / auto
+			if (body.ip_preference !== undefined && !['ipv4', 'ipv6', 'auto'].includes(body.ip_preference)) {
+				return json({ error: 'ip_preference 仅允许 ipv4 / ipv6 / auto' }, 400);
+			}
 			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/h2
 			if (body.entry_list !== undefined) {
 				try {

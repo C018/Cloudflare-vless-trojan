@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 2b01018e553984e9a5671567693ea87d_b95ab917ba3a11f1b172525400248c00
-    ReservedCode1: +xmcT19Y3A/5AAvXDPPIWoyXFGbCBDcXKzRvm5XPMjal9Yw2PbpKq4aglVfXkYXrvf4jFKK5kVd8VehS4wNIq8dCuq5Oca/fArh1uGnvTqGaKyiSbonMttAO0ZU+51FExnPTABZz+VThmmKHDPY8HNSY0OEmx46GG5xojTzkVD52jO772B6/T2pKYr8=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 2b01018e553984e9a5671567693ea87d_b95ab917ba3a11f1b172525400248c00
-    ReservedCode2: +xmcT19Y3A/5AAvXDPPIWoyXFGbCBDcXKzRvm5XPMjal9Yw2PbpKq4aglVfXkYXrvf4jFKK5kVd8VehS4wNIq8dCuq5Oca/fArh1uGnvTqGaKyiSbonMttAO0ZU+51FExnPTABZz+VThmmKHDPY8HNSY0OEmx46GG5xojTzkVD52jO772B6/T2pKYr8=
----
-
 # vless-trojan-d1
 
 基于 Cloudflare Workers + D1 + KV 的 VLESS / Trojan 双协议代理面板，单文件部署（`_worker.js` 混淆版 / `_worker明.js` 明码版）。
@@ -34,6 +23,9 @@ AIGC:
 - DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`），另含 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
 - 代理超时修复：此前客户端连上但实际网络不可用（显示超时），根因是 webSocketMessage 回发的 `DIAG-SEND-OK` 诊断帧污染 VLESS 协议流——xray 校验响应首字节须为 `0x00`，收到 `'D'` 即报错/挂起。已移除 `proxy-session.js` / `session-do.js` 内的 DIAG-SEND-OK 测试帧（不再向客户端回发任何诊断帧；VLESS 握手响应 `0x00 0x00` 与 15s 空包心跳属协议必需，予以保留）
 - DoH 多源修复（1.0.31）：未知域名（如 ip.sb、ip.skk.moe 等开启 CF CDN 的站点）先经 DoH 预解析，判定解析出的 IP 是否落 Cloudflare 地址段——命中则按 CF 站点走 proxyip，避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）。`resolveViaDoH` 端点已从仅 Google IP 型（`https://8.8.8.8/resolve`、`https://8.8.4.4/resolve`）扩为 5 源：cloudflare-dns.com/dns-query、dns.alidns.com/resolve、doh.pub/resolve 域名型优先 + Google IP 型兜底，解决 Worker 运行时 IP 型 DoH 不可达导致预解析失败、路由测试与真实出站错误回退 direct 直连被拦的问题；DoH 结果缓存 300s，避免每个新连接重复查询拖慢建连
+- IPv4 优先连接（1.0.60）：新增 `ip_preference` 系统设置（可选 `ipv4` / `ipv6` / `auto`，默认 `ipv4`），后台系统设置下拉框保存，配置层白名单校验，direct 出站按优先级选择地址族——目标域名解析出多地址族时优先建立指定族连接，降低双栈环境下的连接延迟与握手失败
+- 交互流量下行直通（1.0.60）：代理会话上行突发检测——上行帧间隔 >100ms 判定为交互场景，开启 300ms 窗口，窗口内下行小帧不再合并、直接转发，减少网页浏览 / SSH 等交互场景的下行首包延迟；空闲期仍保持小帧合并以提升大流量吞吐
+- 后台列表页缓存（1.0.60）：管理后台列表页数据 5s 缓存（`LIST_CACHE_TTL=5000`），页面切换 / 返回不再重复请求接口；编辑 / 删除后立即失效，保证数据一致性
 - 流量统计：连接关闭后异步写 D1，按 UUID / 密码维度计数
 
 ## 目录结构
@@ -238,4 +230,3 @@ npm run build   # 等价于 node build.mjs
 ## 环境变量说明
 
 不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已声明于 `wrangler.toml`（含 `[[migrations]] new_sqlite_classes` 供首次部署自动创建 DO 类）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
-*（内容由AI生成，仅供参考）*

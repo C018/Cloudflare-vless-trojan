@@ -19,8 +19,9 @@ const dohCache = new Map(); // hostname -> { ip, ts }
  * @param {string} hostname
  * @param {Function} log
  * @param {'A'|'AAAA'} [rtype]
+ * @param {number} [timeoutMs] 单源超时（默认 2500；ipv4/ipv6 优先模式下用较短超时快速降级原生 DNS）
  */
-export async function resolveViaDoH(hostname, log, rtype = 'A') {
+export async function resolveViaDoH(hostname, log, rtype = 'A', timeoutMs = 2500) {
 	const cacheKey = `${rtype}:${hostname}`;
 	const hit = dohCache.get(cacheKey);
 	if (hit && Date.now() - hit.ts < DOH_CACHE_TTL) {
@@ -40,7 +41,7 @@ export async function resolveViaDoH(hostname, log, rtype = 'A') {
 	let resolved = null;
 	for (const endpoint of endpoints) {
 		const ac = new AbortController();
-		const timer = setTimeout(() => ac.abort(), 2500);
+		const timer = setTimeout(() => ac.abort(), timeoutMs);
 		try {
 			const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${rtype}`;
 			const resp = await fetch(url, { headers: { accept: 'application/dns-json' }, signal: ac.signal });
@@ -197,7 +198,7 @@ export async function connectViaProxyIp(config, hostname, port, initialData, log
  * 直连目标端点（重试入口）：保持直连语义，返回 socket 并记录 usedProxyIp=false
  */
 async function connectDirectWithMeta(config, hostname, port, isIpLiteral, cfDomain, initialData, log) {
-	const socket = await connectDirect(hostname, port, isIpLiteral, cfDomain, log);
+	const socket = await connectDirect(config, hostname, port, isIpLiteral, cfDomain, log);
 	if (!socket) {
 		log(`connect unavailable (${hostname}:${port})`);
 		return null;
@@ -220,10 +221,60 @@ async function tryConnect(host, port, log) {
 	return s || null;
 }
 
-/** 直连目标端点（不经 proxyip）：非 IP 且非已知 CF 域名 → 原生 DNS 直连优先，失败才 DoH 回退 */
-async function connectDirect(hostname, port, isIpLiteral, cfDomain, log) {
+/**
+ * 直连目标端点（不经 proxyip）：
+ * - ipv4（默认）：DoH A 预解析出 IPv4 字面量直连（cache 300s），保证出站固定走 IPv4；
+ *   DoH A 失败（含纯 IPv6 域名）回退原生 DNS 直连兜底，再失败才查 AAAA 走 IPv6。
+ * - ipv6：对称实现，DoH AAAA 优先，失败回退原生 DNS，再失败查 A 走 IPv4。
+ * - auto：原生 DNS 直连优先（直接用 hostname 建连交给 CF 运行时 DNS，省 DoH 预解析延迟），
+ *   失败才 DoH A 回退，A 不存在再查 AAAA（纯 IPv6 域名）。
+ * 已知 CF 域名 / IP 字面量不受影响（保持直接建连，地址族由调用方字面量决定）。
+ */
+async function connectDirect(config, hostname, port, isIpLiteral, cfDomain, log) {
 	if (!isIpLiteral && !cfDomain) {
-		// 原生 DNS 直连优先：直接用 hostname 建连，交给 CF 运行时 DNS，省去 DoH 预解析延迟
+		const pref = config.ipPreference || 'ipv4';
+		// ipv4 优先：DoH A（短超时 1200ms，失败快速降级原生 DNS 保连通）→ 原生 DNS → DoH AAAA
+		if (pref === 'ipv4') {
+			const ip = await resolveViaDoH(hostname, log, 'A', 1200);
+			if (ip) {
+				log(`direct ${hostname}:${port} -> ipv4 ${ip}:${port}`);
+				let s = await tryConnect(ip, port, log);
+				if (s) return s;
+			}
+			log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
+			let s = await tryConnect(hostname, port, log);
+			if (s) return s;
+			// A 记录不存在（纯 IPv6 域名，如 ipv6-api.speedtest.net）→ 查 AAAA，方括号字面量直连 IPv6
+			const ip6 = await resolveViaDoH(hostname, log, 'AAAA');
+			if (ip6) {
+				const ip6Literal = `[${ip6}]`;
+				log(`direct ${hostname}:${port} -> doh aaaa fallback ${ip6Literal}:${port}`);
+				s = await tryConnect(ip6Literal, port, log);
+				if (s) return s;
+			}
+			return null;
+		}
+		// ipv6 优先：DoH AAAA（短超时）→ 原生 DNS → DoH A
+		if (pref === 'ipv6') {
+			const ip6 = await resolveViaDoH(hostname, log, 'AAAA', 1200);
+			if (ip6) {
+				const ip6Literal = `[${ip6}]`;
+				log(`direct ${hostname}:${port} -> ipv6 ${ip6Literal}:${port}`);
+				let s = await tryConnect(ip6Literal, port, log);
+				if (s) return s;
+			}
+			log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
+			let s = await tryConnect(hostname, port, log);
+			if (s) return s;
+			const ip = await resolveViaDoH(hostname, log, 'A');
+			if (ip) {
+				log(`direct ${hostname}:${port} -> doh a fallback ${ip}:${port}`);
+				s = await tryConnect(ip, port, log);
+				if (s) return s;
+			}
+			return null;
+		}
+		// auto：原生 DNS 直连优先：直接用 hostname 建连，交给 CF 运行时 DNS，省去 DoH 预解析延迟
 		log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
 		let s = await tryConnect(hostname, port, log);
 		if (s) return s;
