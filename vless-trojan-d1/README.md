@@ -20,8 +20,7 @@
 - 运行时放置位置检测：后台「网络状态」页顶部新增运行时位置条（页面加载自动请求），展示当前请求实际处理的数据中心信息（`cf.colo` 三字码、CF 区域、城市/国家、入口域名、配置放置区域），API 端点为 `GET /admin/api/colo`（与现有 admin 鉴权一致，PBKDF2 + HMAC Cookie），用于确认区域放置（placement `region=gcp:asia-east2`）是否生效，排查请求被调度到非预期区域导致的延迟问题
 - 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理、Geo 规则库、网络状态检测），PBKDF2 + HMAC Cookie 鉴权；移动端侧边栏自动改为底部横向滑动导航
 - 伪装页：内嵌静态仿 Alist 文件列表页，无外部依赖
-- DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`），另含 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
-- 代理超时修复：此前客户端连上但实际网络不可用（显示超时），根因是 webSocketMessage 回发的 `DIAG-SEND-OK` 诊断帧污染 VLESS 协议流——xray 校验响应首字节须为 `0x00`，收到 `'D'` 即报错/挂起。已移除 `proxy-session.js` / `session-do.js` 内的 DIAG-SEND-OK 测试帧（不再向客户端回发任何诊断帧；VLESS 握手响应 `0x00 0x00` 与 15s 空包心跳属协议必需，予以保留）
+- 代理超时修复：此前客户端连上但实际网络不可用（显示超时），根因是 WS 消息回发的 `DIAG-SEND-OK` 诊断帧污染 VLESS 协议流——xray 校验响应首字节须为 `0x00`，收到 `'D'` 即报错/挂起。已移除 `proxy-session.js` 内的 DIAG-SEND-OK 测试帧（不再向客户端回发任何诊断帧；VLESS 握手响应 `0x00 0x00` 与 15s 空包心跳属协议必需，予以保留）
 - DoH 多源修复（1.0.31）：未知域名（如 ip.sb、ip.skk.moe 等开启 CF CDN 的站点）先经 DoH 预解析，判定解析出的 IP 是否落 Cloudflare 地址段——命中则按 CF 站点走 proxyip，避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）。`resolveViaDoH` 端点已从仅 Google IP 型（`https://8.8.8.8/resolve`、`https://8.8.4.4/resolve`）扩为 5 源：cloudflare-dns.com/dns-query、dns.alidns.com/resolve、doh.pub/resolve 域名型优先 + Google IP 型兜底，解决 Worker 运行时 IP 型 DoH 不可达导致预解析失败、路由测试与真实出站错误回退 direct 直连被拦的问题；DoH 结果缓存 300s，避免每个新连接重复查询拖慢建连
 - IPv4 优先连接（1.0.60）：新增 `ip_preference` 系统设置（可选 `ipv4` / `ipv6` / `auto`，默认 `ipv4`），后台系统设置下拉框保存，配置层白名单校验，direct 出站按优先级选择地址族——目标域名解析出多地址族时优先建立指定族连接，降低双栈环境下的连接延迟与握手失败
 - 交互流量下行直通（1.0.60）：代理会话上行突发检测——上行帧间隔 >100ms 判定为交互场景，开启 300ms 窗口，窗口内下行小帧不再合并、直接转发，减少网页浏览 / SSH 等交互场景的下行首包延迟；空闲期仍保持小帧合并以提升大流量吞吐
@@ -33,19 +32,17 @@
 ```
 vless-trojan-d1/
 ├── src/
-│   ├── index.js            # 入口路由（admin / cron / queue / ws / 订阅 / 伪装页）+ 具名导出 ProxySessionDO
+│   ├── index.js            # 入口路由（admin / cron / queue / ws / 订阅 / 伪装页）
 │   ├── cron.js             # 定时更新 Geo 数据
 │   ├── netprobe.js         # 网络状态探测（Worker 内多目标并行采样）
 │   ├── version.js          # 构建版本号（build.mjs 自动递增）
 │   ├── config/
 │   │   ├── constants.js    # 协议 / 出站 / geo 常量
 │   │   └── defaults.js     # D1 读取层 + 请求级配置缓存 + 初始密码生成
-│   ├── durable/
-│   │   └── session-do.js   # Durable Object ProxySessionDO（长连接托管 / Hibernation API）
 │   ├── handlers/
 │   │   ├── entry.js        # 入站入口分流（ws / http 升级判断）
 │   │   ├── http.js         # HTTP 入口处理
-│   │   ├── websocket.js    # WS 升级 + io 适配（early data / createWsIO / feed 注入）
+│   │   ├── websocket.js    # WS 升级 + io 适配（early data / createWsIO）
 │   │   └── proxy-session.js# 通用代理会话核心（协议解析 / TCP / UDP 转发 / 流量统计）
 │   ├── protocol/
 │   │   ├── vless.js        # VLESS 入站头解析 / 出站头构造
@@ -147,14 +144,13 @@ wrangler deploy   # 使用 wrangler.toml 中的配置部署
 ```
 
 > 配置说明：
-> - `wrangler.toml` 为**部署配置模板**：D1 database_id 与 KV namespace id 为 `REPLACE_WITH_...` 占位符，复制后填入自己的 ID 即可使用；其中含 `[[migrations]] new_sqlite_classes=["ProxySessionDO"]`，首次部署会自动创建 DO SQLite 类。
-> - Durable Objects：`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`）。**必须保留入口 `index.js` 对 `ProxySessionDO` 的具名导出**，否则 DO 类无法被 Worker 识别、WS 会话将回退 Worker 内处理（功能可用但无长连接保活）。
+> - `wrangler.toml` 为**部署配置模板**：D1 database_id 与 KV namespace id 为 `REPLACE_WITH_...` 占位符，复制后填入自己的 ID 即可使用。
 
 部署后可删除 `_worker明.js` 仅保留混淆版，降低被逆向概率。
 
 ## 单文件手动部署（控制台操作，免本地环境）
 
-不依赖 Node.js / npm / wrangler CLI，全程在 Cloudflare 控制台完成。以下操作与 `wrangler deploy` 等效，绑定变量名与 `wrangler.toml` 保持一致（D1 绑定名 `DB`、KV 绑定名 `GEO_KV`、Queues 绑定名 `GEO_QUEUE`、Durable Object 绑定名 `PROXY_DO`）。
+不依赖 Node.js / npm / wrangler CLI，全程在 Cloudflare 控制台完成。以下操作与 `wrangler deploy` 等效，绑定变量名与 `wrangler.toml` 保持一致（D1 绑定名 `DB`、KV 绑定名 `GEO_KV`、Queues 绑定名 `GEO_QUEUE`）。
 
 ### 1. 创建 D1 数据库并建表
 
@@ -175,16 +171,14 @@ wrangler deploy   # 使用 wrangler.toml 中的配置部署
 2. 用编辑器打开本地 `_worker.js`（混淆版部署产物），**全选复制全部内容**，在 Worker 编辑器中覆盖默认模板代码。
 3. 点击 **Deploy** 完成首次部署。
 
-### 5. 绑定 D1、KV、Queues 与 Durable Objects
+### 5. 绑定 D1、KV 与 Queues
 
 1. Worker 页面 → **Settings** → **Bindings** → **Add binding**：
    - **D1 database**：Variable name 填 `DB`，数据库选择 `cf-vless-trojan-d1`；
    - **KV namespace**：Variable name 填 `GEO_KV`，命名空间选择 `GEO_KV`；
    - **Queue（Producer）**：Variable name 填 `GEO_QUEUE`，队列选择 `cf-vless-trojan-d1-geo-update`。
 2. 同一页面再添加 **Queue（Consumer）** 绑定：队列选择 `cf-vless-trojan-d1-geo-update`，批大小 1、最大重试 2、死信队列 `cf-vless-trojan-d1-geo-update-dlq`。
-3. **添加 Durable Object 绑定**：**Add binding** → **Durable Object Namespace**，Variable name 填 `PROXY_DO`，Class name 填 `ProxySessionDO`（须与 `src/durable/session-do.js` 导出的类名一致）。
-4. **添加 Durable Object migration**：Worker 页面 → **Settings** → **Durable Objects** → **Add migration**，选择 **New SQLite classes（new_sqlite_classes）**，类名填 `ProxySessionDO`，tag 可填 `v1`（对应 `wrangler.toml` 的 `[[migrations]]`）。控制台手动部署没有 wrangler CLI 自动迁移，漏配 migration 会导致 DO 类未创建、绑定不生效。
-5. 保存绑定后再次点击 **Deploy**，使绑定生效（含 DO 绑定与 migration）。
+3. 保存绑定后再次点击 **Deploy**，使绑定生效。
 
 > ⚠️ **重要踩坑（控制台手动部署）**：务必在 **Settings → Bindings** 中手动添加 **Queue（Producer）** 绑定 `GEO_QUEUE` 指向 `cf-vless-trojan-d1-geo-update`。若漏加生产者绑定，`env.GEO_QUEUE` 为 `undefined`，geo 更新消息无法入队，进度弹框会一直卡在「更新中… 进度 0/0」。注意：即使 Consumer 触发器与队列资源已存在，缺少生产者绑定仍无法投递消息。
 
@@ -229,4 +223,4 @@ npm run build   # 等价于 node build.mjs
 
 ## 环境变量说明
 
-不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已声明于 `wrangler.toml`（含 `[[migrations]] new_sqlite_classes` 供首次部署自动创建 DO 类）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
+不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖三个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列），均已声明于 `wrangler.toml`；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示）。

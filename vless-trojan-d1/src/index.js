@@ -13,7 +13,6 @@
 import { connect } from 'cloudflare:sockets';
 import { createRequestConfig, composeInboundScope } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
-export { ProxySessionDO } from './durable/session-do.js';
 import { handleH2Inbound, handleGrpcInbound } from './handlers/entry.js';
 import { handleHttp } from './handlers/http.js';
 import { handleAdminApi, runGeoUpdateTask } from './admin/api.js';
@@ -63,11 +62,6 @@ export default {
 				const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
 				const isGrpc = path.endsWith('/Tun') || contentType.includes('application/grpc');
 				if (upgrade === 'websocket' && !isGrpc) {
-					// DO 托管长连接会话，突破 30s idle 断连；未配置 DO binding 时回退 Worker 内处理
-					if (env.PROXY_DO) {
-						const doId = env.PROXY_DO.newUniqueId();
-						return await env.PROXY_DO.get(doId).fetch(request);
-					}
 					return await handleWebSocketUpgrade(request, config, env);
 				}
 				if (isGrpc) {

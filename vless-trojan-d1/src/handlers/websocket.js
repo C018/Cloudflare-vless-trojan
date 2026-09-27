@@ -41,7 +41,7 @@ function normalizeToUint8Array(data) {
  */
 export function extractEarlyData(request, log) {
 	// 字符串提取 ?ed= 参数：避免每个 WS 升级连接重复 new URL(request.url)
-	// （index.js / session-do.js 的 fetch 已解析过 URL）；语义与 URLSearchParams.get 等价
+	// （index.js 的 fetch 已解析过 URL）；语义与 URLSearchParams.get 等价
 	// （取首个匹配、解码 percent-encoding），但省一次完整 URL 解析 + URLSearchParams 分配
 	let edParam = null;
 	const qIdx = request.url.indexOf('?');
@@ -163,22 +163,6 @@ export function createWsIO(ws, log, earlyData = null) {
 		},
 		close() {
 			safeCloseWebSocket(ws);
-		},
-		/**
-		 * Hibernation API 注入：DO 内 addEventListener('message') 不生效，
-		 * webSocketMessage 类方法收到的帧必须经此进入读取队列。
-		 */
-		feed(bytes) {
-			if (!bytes || bytes.byteLength === 0) return;
-			const waiter = waiters.shift();
-			if (waiter) waiter(bytes);
-			else queue.push(bytes);
-		},
-		/**
-		 * Hibernation API 注入：webSocketClose / webSocketError 时置 EOF。
-		 */
-		signalClose() {
-			onClose();
 		}
 	};
 }
