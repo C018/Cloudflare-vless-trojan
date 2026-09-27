@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 2b01018e553984e9a5671567693ea87d_b95ab917ba3a11f1b172525400248c00
+    ReservedCode1: +xmcT19Y3A/5AAvXDPPIWoyXFGbCBDcXKzRvm5XPMjal9Yw2PbpKq4aglVfXkYXrvf4jFKK5kVd8VehS4wNIq8dCuq5Oca/fArh1uGnvTqGaKyiSbonMttAO0ZU+51FExnPTABZz+VThmmKHDPY8HNSY0OEmx46GG5xojTzkVD52jO772B6/T2pKYr8=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 2b01018e553984e9a5671567693ea87d_b95ab917ba3a11f1b172525400248c00
+    ReservedCode2: +xmcT19Y3A/5AAvXDPPIWoyXFGbCBDcXKzRvm5XPMjal9Yw2PbpKq4aglVfXkYXrvf4jFKK5kVd8VehS4wNIq8dCuq5Oca/fArh1uGnvTqGaKyiSbonMttAO0ZU+51FExnPTABZz+VThmmKHDPY8HNSY0OEmx46GG5xojTzkVD52jO772B6/T2pKYr8=
+---
+
 # vless-trojan-d1
 
 基于 Cloudflare Workers + D1 + KV 的 VLESS / Trojan 双协议代理面板，单文件部署（`_worker.js` 混淆版 / `_worker明.js` 明码版）。
@@ -11,12 +22,14 @@
 - 入口设置：可配置入口 IP/域名、端口、SNI、Host，设置后节点/订阅改用入口配置，未设置则使用当前域名
 - 出站认证：socks5 / http 支持用户名密码认证（后台字段配置，或地址内嵌 `user:pass@host:port`，字段优先）
 - VLESS 出站：支持 TLS（ws/wss 切换）与 SNI 配置（Workers 平台限制下 SNI 跟随连接主机名，配置 SNI 后以其作为连接主机）
-- Geo 数据：GEO_KV 存分类 JSON，Cron 每日 03:00 自动更新（HTTP 可手动触发），内置冷启动兜底；手动更新经 Workers Queues 异步执行（不受请求 30s 限制，失败自动重试），后台弹窗轮询 `/admin/api/geo/status` 实时展示逐分类进度（进度状态写 GEO_KV 的 `geo:update_status`，已修复入队后空状态显示 0/0 的问题）
+- Geo 规则库：后台独立「Geo 规则库」菜单，展示已落库 geosite（域名分类）与 geoip（IP 分类）统计、规则库版本与更新状态；支持关键词查询可用分类（如 `openai` / `cn` / `telegram`）并点击复制（`geosite:xxx` / `geoip:xxx`），便于配置路由规则时直接引用
+- Geo 数据更新：Cron 每日 03:00 自动更新（`/geo-update-cron` 可手动触发），内置冷启动兜底；手动「更新规则」经 Workers Queues 入队后由队列消费者独立执行（不受请求 30s wall-time 限制，失败自动重试、重试耗尽进死信队列），不阻塞请求；更新带互斥锁（`geo:updating`，TTL 7200s）与消费者幂等保护（`geo:update_busy`），后台弹窗轮询 `/admin/api/geo/status` 实时展示逐分类进度（进度写 `geo:update_status`）
+- Geo 规则来源：geosite 运行时动态全量枚举 v2fly/domain-list-community `data/` 目录（约 1589 个分类，Git Trees API 优先、Contents API 兜底、失败回退内置白名单）；geoip 解析 SagerNet/sing-geoip 官方 rule-set 分支 `.srs` 二进制（SRS v1，区间转 CIDR），数据落 GEO_KV（`geosite:{category}` / `geoip:{category}`）
 - 订阅生成：单节点 / 聚合（纯文本 / Base64 / Clash / sing-box）
 - 单凭据配置页：`/uuid=<uuid>` 与 `/password=<密码>` 返回专属节点链接
 - 网络状态检测：后台「网络状态」页按项目出站链（分流规则 + 默认出站 + proxyip + 出站隧道）在 Worker 内多目标并行探测，每目标 16 次采样，展示延迟 / 丢包 / min / max；ip.skk.moe 风格卡片，品牌色 Logo 与呼吸灯，支持自动刷新
 - 运行时放置位置检测：后台「网络状态」页顶部新增运行时位置条（页面加载自动请求），展示当前请求实际处理的数据中心信息（`cf.colo` 三字码、CF 区域、城市/国家、入口域名、配置放置区域），API 端点为 `GET /admin/api/colo`（与现有 admin 鉴权一致，PBKDF2 + HMAC Cookie），用于确认区域放置（placement `region=gcp:asia-east2`）是否生效，排查请求被调度到非预期区域导致的延迟问题
-- 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理、网络状态检测），PBKDF2 + HMAC Cookie 鉴权；移动端侧边栏自动改为底部横向滑动导航
+- 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理、Geo 规则库、网络状态检测），PBKDF2 + HMAC Cookie 鉴权；移动端侧边栏自动改为底部横向滑动导航
 - 伪装页：内嵌静态仿 Alist 文件列表页，无外部依赖
 - DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`），另含 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
 - 代理超时修复：此前客户端连上但实际网络不可用（显示超时），根因是 webSocketMessage 回发的 `DIAG-SEND-OK` 诊断帧污染 VLESS 协议流——xray 校验响应首字节须为 `0x00`，收到 `'D'` 即报错/挂起。已移除 `proxy-session.js` / `session-do.js` 内的 DIAG-SEND-OK 测试帧（不再向客户端回发任何诊断帧；VLESS 握手响应 `0x00 0x00` 与 15s 空包心跳属协议必需，予以保留）
@@ -61,8 +74,8 @@ vless-trojan-d1/
 │   │   └── engine.js       # 分流规则解析与匹配
 │   ├── admin/
 │   │   ├── auth.js         # PBKDF2 密码哈希 + HMAC 会话
-│   │   ├── api.js          # REST API（登录 / CRUD / 统计 / geo 更新 / 网络状态检测 / 路由测试）
-│   │   └── ui.js           # 后台单页 UI（geo 进度弹框、网络状态页、出站路由测试）
+│   │   ├── api.js          # REST API（登录 / CRUD / 统计 / geo 规则库 info / update / status / 网络状态检测 / 路由测试）
+│   │   └── ui.js           # 后台单页 UI（Geo 规则库菜单、geo 更新进度弹框、网络状态页、出站路由测试）
 │   ├── generators/
 │   │   ├── subscription.js # 节点链接 / 订阅生成
 │   │   └── config-page.js  # 单凭据配置页
@@ -88,6 +101,23 @@ vless-trojan-d1/
 > proxyip 已从出站类型改为系统设置项：在后台「系统设置」填写 proxyip（IP 或域名，支持 `host:port`，默认 443），当默认出站为 `direct` 时生效——目标端点替换为 proxyip 后裸 TCP 连接，客户端 TLS ClientHello / HTTP 首包原样转发，由 CF 边缘按 SNI / Host 路由，用于访问 Cloudflare 相关网站。UDP 出站代理在「系统设置」配置 `udp_outbound`（出站名，仅 vless 类型出站支持 UDP）。
 >
 > 1.0.8 起 direct + proxyip 支持双向智能回退：命中 Cloudflare 自家域名后缀时优先直连，其余目标默认直连，5s 内无首包数据自动回退 proxyIP 重连（仅 443 TLS 流量适用）；反之已走 proxyIP 的连接若 5s 无首包，会将该 proxyIP 标记为故障（60s 冷却期内同类连接直接改直连）并自动切回直连重试，CF 相关站点打开更稳定。
+
+## Geo 规则库
+
+后台独立「Geo 规则库」菜单（`/admin` → 侧边栏「Geo 规则库」）提供规则库概览、查询与更新入口：
+
+- **概览**：展示已落库的 geosite（域名分类）与 geoip（IP 分类）数量、规则库版本（`geo:version`）与当前更新状态，接口 `GET /admin/api/geo/info`（KV list 分页统计 + 返回分类名列表供前端查询）
+- **关键词查询**：输入关键词（如 `openai` / `cn` / `telegram`）过滤已落库分类，匹配项以 `geosite:xxx` / `geoip:xxx` 形式展示，点击即复制，可直接粘贴到路由规则中引用
+- **更新规则**：`POST /admin/api/geo/update` 触发全量更新。更新经 Workers Queues 入队后由队列消费者独立执行，不阻塞请求；进度经 `geo:update_status` 分阶段写入 KV，前端弹窗轮询 `GET /admin/api/geo/status` 实时展示逐分类进度
+
+### 更新机制
+
+- **geosite 动态全量枚举**：分类不再依赖内置白名单，改为运行时枚举 v2fly/domain-list-community `data/` 目录全部分类（约 1589 个）：Git Trees API（recursive=1 一次取全量 tree）优先、Contents API 兜底，两者均失败才回退内置白名单，保证 cron 更新不中断
+- **geoip 使用 .srs**：解析 SagerNet/sing-geoip 官方 rule-set 分支的 `geoip-{category}.srs` 二进制（SRS v1：magic + zlib + rules，IPCIDR 为 ipset 区间编码），区间转 CIDR 列表后落库，取常用国家/地区代码分类
+- **互斥锁**：`geo:updating` 保证同一时间仅一个更新任务（TTL 7200s，覆盖全量 ~1589 分类的完整耗时，防止锁提前过期导致重复入队覆盖进度）
+- **消费者幂等**：队列消费者消费前检查 `geo:update_busy` 标记，已有任务在执行则直接 ack 跳过积压的重复消息，无论成功失败 `finally` 均清除标记
+- **前端超时提示**：全量更新耗时可能远超请求 30s 限制，只要互斥锁存活即视为正常；仅当长时间停留在「已入队」初始态（超过 30s）时温和提示「更新已进入后台，请耐心等待」，不再误报「队列消费者未生效」
+- **无队列兜底**：未绑定 `GEO_QUEUE` 生产者时回退 `ctx.waitUntil` 后台异步更新（同样分阶段写进度），前端轮询逻辑不变
 
 ## 部署步骤
 
@@ -186,7 +216,7 @@ Worker 页面 → **Settings** → **Domains & Routes** → **Add custom domain*
    - 聚合订阅：`https://<域名>/subscribe?token=<admin密码>`
    - 单凭据页：`https://<域名>/uuid=<UUID>` 或 `https://<域名>/password=<密码>`
    - 客户端订阅需带 ws path（默认 `/`，可在后台系统设置修改）。
-4. 后台可管理出站代理、分流规则、查看流量统计、运行网络状态检测，并手动触发 Geo 数据更新（弹窗实时显示逐分类进度）。
+4. 后台可管理出站代理、分流规则、查看流量统计、运行网络状态检测；「Geo 规则库」菜单可查看规则库版本与落库统计、按关键词查询可用 geo 规则（点击复制），并点击「更新规则」触发异步全量更新（弹窗实时显示逐分类进度）。
 
 ## 构建
 
@@ -208,3 +238,4 @@ npm run build   # 等价于 node build.mjs
 ## 环境变量说明
 
 不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已声明于 `wrangler.toml`（含 `[[migrations]] new_sqlite_classes` 供首次部署自动创建 DO 类）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
+*（内容由AI生成，仅供参考）*
