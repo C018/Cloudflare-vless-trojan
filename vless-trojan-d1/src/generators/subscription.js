@@ -38,7 +38,7 @@ export function buildVlessLink(p) {
 		tfo: '1',
 	});
 	if (transport === 'grpc') {
-		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+		params.set('serviceName', serviceNameOf(p.wsPath));
 	} else if (transport === 'h2') {
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
@@ -64,7 +64,7 @@ export function buildTrojanLink(p) {
 		tfo: '1',
 	});
 	if (transport === 'grpc') {
-		params.set('serviceName', `/${serviceNameOf(p.wsPath)}`);
+		params.set('serviceName', serviceNameOf(p.wsPath));
 	} else if (transport === 'h2') {
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
@@ -159,7 +159,7 @@ export function buildClashSubscription(config, targets) {
 				_wsHost: wsHost,
 			};
 			if (transport === 'grpc') {
-				pr['grpc-opts'] = { 'grpc-service-name': `/${serviceNameOf(wsPath)}` };
+				pr['grpc-opts'] = { 'grpc-service-name': serviceNameOf(wsPath) };
 			} else if (transport === 'h2') {
 				pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
 			} else {
@@ -223,7 +223,7 @@ export function buildSingBoxSubscription(config, targets) {
 	const multi = targets.length > 1;
 	const transportOf = (wsPath, transport, wsHost) => {
 		if (transport === 'grpc') {
-			return { type: 'grpc', service_name: `/${serviceNameOf(wsPath)}` };
+			return { type: 'grpc', service_name: serviceNameOf(wsPath) };
 		}
 		if (transport === 'h2') {
 			return { type: 'http', host: [wsHost], path: wsPath.startsWith('/') ? wsPath : `/${wsPath}` };

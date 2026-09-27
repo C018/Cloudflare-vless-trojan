@@ -55,7 +55,10 @@ export default {
 
 			// 3) 代理入站：按入站路径映射 + 请求特征自动分发（同一凭据同时支持 ws / grpc / h2）
 			const config = await createRequestConfig(request, env);
-			const scopes = config.inboundPathMap.get(path);
+			// grpc 客户端（xray 等）以 /{serviceName}/Tun 建流；旧订阅链接的 serviceName
+			// 曾带前导斜杠，会请求 //path/Tun 双斜杠路径。压缩连续斜杠后兼容这类存量链接，
+			// 正常路径无连续斜杠时 replace 返回原值，不影响现有路由。
+			const scopes = config.inboundPathMap.get(path) || config.inboundPathMap.get(path.replace(/\/+/g, '/'));
 			if (scopes && scopes.length > 0) {
 				config._inboundScope = composeInboundScope(scopes);
 				const upgrade = String(request.headers.get('Upgrade') || '').toLowerCase();

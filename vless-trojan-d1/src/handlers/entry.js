@@ -63,17 +63,30 @@ export async function handleH2Inbound(request, config, env) {
 	const writer = writable.getWriter();
 
 	const io = {
+		// 首包累积标志：仅首次读取（协议头）需要累积到 60 字节判定 trojan；
+		// 后续每次读取必须直接返回 body 块，否则 <60B 的上行数据（DNS 查询、
+		// HTTP 小请求、交互式流量）会被挂起等待凑满——h2 请求体在连接生命周期
+		// 内不 EOF，这些数据将永远无法转发到目标，导致 h2 入站不可用。
+		firstReadDone: false,
 		read: async () => {
-			// 首次读取累积缓冲：CF 可能把单个 DATA 帧拆成多个 body chunk，
-			// 若 VLESS/Trojan 头被拆断，proxy-session 会误判 invalid data。
-			// 累积到协议头判定阈值（trojan 头固定 60 字节）或 EOF 再返回。
-			let buf = new Uint8Array(0);
-			for (;;) {
-				const { done, value } = await bodyReader.read();
-				if (done) return buf.byteLength > 0 ? buf : null;
-				buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
-				if (buf.byteLength >= 60) return buf;
+			if (!io.firstReadDone) {
+				io.firstReadDone = true;
+				// 首次读取累积缓冲：CF 可能把单个 DATA 帧拆成多个 body chunk，
+				// 若 VLESS/Trojan 头被拆断，proxy-session 会误判 invalid data。
+				// 累积到协议头判定阈值（trojan 头固定 60 字节）或 EOF 再返回。
+				let buf = new Uint8Array(0);
+				for (;;) {
+					const { done, value } = await bodyReader.read();
+					if (done) return buf.byteLength > 0 ? buf : null;
+					buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
+					if (buf.byteLength >= 60) return buf;
+				}
 			}
+			// 后续读取：直通返回单个 body 块（不做累积），保持小包低延迟转发
+			const { done, value } = await bodyReader.read();
+			if (done) return null;
+			if (!value || value.byteLength === 0) return new Uint8Array(0);
+			return value instanceof Uint8Array ? value : new Uint8Array(value);
 		},
 		write: (data) => writer.write(data),
 		close: async () => {
@@ -128,7 +141,13 @@ export async function handleGrpcInbound(request, config, env) {
 				const { done, value } = await bodyReader.read();
 				if (done) {
 					if (pending.byteLength === 0) return null;
-					// 尾部不足一帧：按剩余原始字节处理（容忍）
+					// 尾部不足一帧：不足 5 字节的 gRPC 帧头残留直接丢弃
+					// （无法构成有效载荷，混入会把帧头字节当业务数据转发）；
+					// 其余按剩余原始字节容忍处理
+					if (pending.byteLength < 5) {
+						pending = new Uint8Array(0);
+						return new Uint8Array(0);
+					}
 					const rest = pending;
 					pending = new Uint8Array(0);
 					return rest;
