@@ -18,7 +18,7 @@
 - 运行时放置位置检测：后台「网络状态」页顶部新增运行时位置条（页面加载自动请求），展示当前请求实际处理的数据中心信息（`cf.colo` 三字码、CF 区域、城市/国家、入口域名、配置放置区域），API 端点为 `GET /admin/api/colo`（与现有 admin 鉴权一致，PBKDF2 + HMAC Cookie），用于确认区域放置（placement `region=gcp:asia-east2`）是否生效，排查请求被调度到非预期区域导致的延迟问题
 - 后台：iOS 风格管理面板（流量统计、入站 / 出站 / 规则 / 设置管理、网络状态检测），PBKDF2 + HMAC Cookie 鉴权；移动端侧边栏自动改为底部横向滑动导航
 - 伪装页：内嵌静态仿 Alist 文件列表页，无外部依赖
-- DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 增加 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`）与 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
+- DO 长连接改造：WS 入站代理会话已托管到 Durable Object（`ProxySessionDO`），突破 Workers 请求 30s idle 断连限制（Telegram 等长连接不再「正在刷新」）。技术要点：DO 内 `state.acceptWebSocket` 接管握手、`fetch` 立即返回 101，`processProxySession` 作为后台任务持续运行保持长连接（出站转发 / 流量统计与 Worker 内路径完全一致）；WS 消息经 Hibernation API 的 `webSocketMessage` 类方法接收（DO 中 `addEventListener('message')` 不生效）并注入 io 队列。`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`），另含 `[[migrations]] new_sqlite_classes`；DO class 须从入口 `index.js` 具名导出（`export { ProxySessionDO }`）。未配置 DO 绑定（如手工粘贴部署漏配）时自动回退 Worker 内处理，不影响功能
 - 代理超时修复：此前客户端连上但实际网络不可用（显示超时），根因是 webSocketMessage 回发的 `DIAG-SEND-OK` 诊断帧污染 VLESS 协议流——xray 校验响应首字节须为 `0x00`，收到 `'D'` 即报错/挂起。已移除 `proxy-session.js` / `session-do.js` 内的 DIAG-SEND-OK 测试帧（不再向客户端回发任何诊断帧；VLESS 握手响应 `0x00 0x00` 与 15s 空包心跳属协议必需，予以保留）
 - DoH 多源修复（1.0.31）：未知域名（如 ip.sb、ip.skk.moe 等开启 CF CDN 的站点）先经 DoH 预解析，判定解析出的 IP 是否落 Cloudflare 地址段——命中则按 CF 站点走 proxyip，避免 sockets 直连 CF IP 被拦截后只能靠 5s 首包回退（慢且偶发失败）。`resolveViaDoH` 端点已从仅 Google IP 型（`https://8.8.8.8/resolve`、`https://8.8.4.4/resolve`）扩为 5 源：cloudflare-dns.com/dns-query、dns.alidns.com/resolve、doh.pub/resolve 域名型优先 + Google IP 型兜底，解决 Worker 运行时 IP 型 DoH 不可达导致预解析失败、路由测试与真实出站错误回退 direct 直连被拦的问题；DoH 结果缓存 300s，避免每个新连接重复查询拖慢建连
 - 流量统计：连接关闭后异步写 D1，按 UUID / 密码维度计数
@@ -69,8 +69,8 @@ vless-trojan-d1/
 │   └── disguise/
 │       └── alist.js        # Alist 风格伪装页
 ├── schema.sql              # D1 建表与种子数据
-├── wrangler.toml           # Worker / D1 / KV / Cron / Queues / Durable Objects 绑定
-├── package.json            # 构建链（esbuild + javascript-obfuscator）
+├── wrangler.toml           # 部署配置模板（D1/KV ID 为 REPLACE 占位，复制填写后使用）
+├── package.json            # 项目元信息与构建脚本
 ├── _worker.js              # 混淆版部署产物
 └── _worker明.js            # 明码版部署产物
 ```
@@ -95,7 +95,7 @@ vless-trojan-d1/
 
 ```bash
 wrangler d1 create vless-trojan-d1
-# 将返回的 database_id 填入 wrangler.toml
+# 将返回的 database_id 填入 wrangler.toml 的 REPLACE 占位符
 wrangler d1 execute vless-trojan-d1 --remote --file=schema.sql
 ```
 
@@ -103,7 +103,7 @@ wrangler d1 execute vless-trojan-d1 --remote --file=schema.sql
 
 ```bash
 wrangler kv namespace create GEO_KV
-# 将返回的 id 填入 wrangler.toml
+# 将返回的 id 填入 wrangler.toml 的 REPLACE 占位符
 ```
 
 ### 3. 创建 Workers Queues 队列
@@ -120,11 +120,13 @@ wrangler queue create cf-vless-trojan-d1-geo-update-dlq   # 死信队列
 
 ```bash
 npm install
-npm run build        # 生成 _worker.js（混淆）与 _worker明.js（明码）
-wrangler deploy
+npm run build   # 自动递增 src/version.js 版本号（1.0.x-yyyyMMdd-HHmm），产出 _worker.js（混淆）与 _worker明.js（明码）
+wrangler deploy   # 使用 wrangler.toml 中的配置部署
 ```
 
-> Durable Objects：`wrangler.toml` 已声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`）与 `[[migrations]] new_sqlite_classes=["ProxySessionDO"]`，无需额外配置；首次 `wrangler deploy` 会自动执行 migration 创建 DO SQLite 类。**必须保留入口 `index.js` 对 `ProxySessionDO` 的具名导出**，否则 DO 类无法被 Worker 识别、WS 会话将回退 Worker 内处理（功能可用但无长连接保活）。
+> 配置说明：
+> - `wrangler.toml` 为**部署配置模板**：D1 database_id 与 KV namespace id 为 `REPLACE_WITH_...` 占位符，复制后填入自己的 ID 即可使用；其中含 `[[migrations]] new_sqlite_classes=["ProxySessionDO"]`，首次部署会自动创建 DO SQLite 类。
+> - Durable Objects：`wrangler.toml` 声明 `[durable_objects]` 绑定 `PROXY_DO`（class_name=`ProxySessionDO`）。**必须保留入口 `index.js` 对 `ProxySessionDO` 的具名导出**，否则 DO 类无法被 Worker 识别、WS 会话将回退 Worker 内处理（功能可用但无长连接保活）。
 
 部署后可删除 `_worker明.js` 仅保留混淆版，降低被逆向概率。
 
@@ -189,11 +191,20 @@ Worker 页面 → **Settings** → **Domains & Routes** → **Add custom domain*
 ## 构建
 
 ```bash
-npm run build        # build:plain（esbuild 产出 _worker明.js）+ build:obf（混淆产出 _worker.js）
-npm run dev          # wrangler dev 本地调试
-npm run deploy       # wrangler deploy 发布
+npm install
+npm run build   # 等价于 node build.mjs
 ```
+
+构建脚本 `build.mjs` 位于项目根目录，自包含完成以下流程：
+1. 自动读取并递增 `src/version.js` 的 `VERSION`（格式 `1.0.x-yyyyMMdd-HHmm`，每次构建 x +1）写回文件；
+2. esbuild 打包 `src/index.js`（bundle / esm / es2022 / minify，`external: cloudflare:sockets`，fflate 经 fflate-alias 插件解析到项目内 `node_modules/fflate/esm/browser.js`），产出明码版临时文件（ASCII 名）；
+3. javascript-obfuscator 混淆产出 `_worker.js`（混淆已降档：关闭 string-array 字符串数组混淆、仅保留 compact 压缩，以降低 Worker 冷启动开销）；
+4. 脚本内部将明码版临时文件重命名为 `_worker明.js`（中文文件名由 Node `renameSync` 处理，无 Windows 乱码问题）。
+
+最终产物：`_worker.js`（混淆版，部署用）与 `_worker明.js`（明码版）。
+
+构建依赖（esbuild / javascript-obfuscator / wrangler / fflate）声明于 `package.json`，`npm install` 自动安装；本地调试可用 `wrangler dev`。
 
 ## 环境变量说明
 
-不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已在 `wrangler.toml` 中声明（含 `[[migrations]] new_sqlite_classes`）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
+不依赖环境变量；所有配置（ws 路径、默认出站、proxyip、udp 出站代理、入口设置、admin 密码、伪装页标题等）均存于 D1 `settings` 表，可在后台系统设置中修改。运行时依赖四个绑定：D1（`DB`）、KV（`GEO_KV`）、Workers Queues（`GEO_QUEUE`，geo 更新队列）、Durable Objects（`PROXY_DO`，WS 长连接会话托管，class_name=`ProxySessionDO`），均已声明于 `wrangler.toml`（含 `[[migrations]] new_sqlite_classes` 供首次部署自动创建 DO 类）；控制台手动部署时需手动添加 `GEO_QUEUE` 生产者绑定（见上文踩坑提示），并手动添加 `PROXY_DO` 的 Durable Object 绑定与 migration（见上文第 5 节）。若 `PROXY_DO` 缺失，WS 会话自动回退 Worker 内处理，功能可用但不具备长连接保活。
