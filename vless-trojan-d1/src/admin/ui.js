@@ -202,6 +202,7 @@ export function buildAdminUI(tempPassword) {
     <div class="nav-item" data-tab="outbounds">🌐 出站代理</div>
     <div class="nav-item" data-tab="rules">🧭 路由规则</div>
     <div class="nav-item" data-tab="routetest">🧭 路由测试</div>
+    <div class="nav-item" data-tab="geo">🌏 Geo 规则库</div>
     <div class="nav-item" data-tab="settings">⚙️ 系统设置</div>
     <div class="nav-item" id="logoutBtn" style="margin-top:20px;color:var(--danger)">↩ 退出登录</div>
   </aside>
@@ -309,6 +310,7 @@ async function switchTab(tab){
   if (tab==='settings'){ mc.innerHTML = '<div class="page-title">系统设置</div><div class="card">加载中...</div>'; await loadSettings(); return; }
   if (tab==='entry'){ mc.innerHTML = '<div class="page-title">入口设置</div><div class="card">加载中...</div>'; await loadEntry(); return; }
   if (tab==='routetest'){ mc.innerHTML = '<div class="page-title">路由测试</div>'+ROUTE_TEST_CARD; return; }
+  if (tab==='geo'){ mc.innerHTML = '<div class="page-title">Geo 规则库</div>'+GEO_CARD; loadGeoInfo(); return; }
   const def = TAB_DEFS[tab];
   mc.innerHTML = '<div class="page-title">'+def.title+'</div><div class="toolbar"><button class="btn small" onclick="openNew()">＋ 新增</button></div><div class="card"><div class="table-wrap"><table><thead><tr>'+def.fields.map(f=>'<th>'+f.label+'</th>').join('')+'<th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div></div>';
   state.schema = def;
@@ -321,6 +323,64 @@ const ROUTE_TEST_CARD = '<div class="card" id="routeTestCard" style="margin-top:
   '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">输入域名或 IP，按当前配置（路由规则 → 默认出站 → proxyip）判定真实路由走向。direct 绿 / proxyip 蓝 / outbound 橙 / reject 红。</div>'+
   '<div style="display:flex;gap:8px"><input id="routeTestDomain" placeholder="例如 www.google.com / 1.1.1.1" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:var(--input-bg)"><button class="btn small" onclick="runRouteTest()">测试</button></div>'+
   '<div id="routeTestResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
+
+// Geo 规则库：独立菜单 tab，展示已落库规则统计、提供更新入口，并支持按关键词查询已落库分类（便于在路由规则中引用 geosite:/geoip:）
+const GEO_CARD = '<div class="card" id="geoInfoCard" style="margin-top:16px">'+
+  '<h3 style="font-size:15px;margin-bottom:8px">🌏 Geo 规则库</h3>'+
+  '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">当前已落库的 geosite（域名分类）与 geoip（IP 分类）规则统计。点击「更新规则」从上游拉取最新规则（geosite 全量约 1589 类，耗时较长）。</div>'+
+  '<div id="geoInfoStats" style="font-size:13px;line-height:1.9">加载中…</div>'+
+  '<div style="margin-top:14px"><button class="btn small" onclick="openGeoUpdate()">🔄 更新规则</button></div>'+
+  '<div style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px">'+
+  '<div style="font-size:13px;font-weight:600;margin-bottom:6px">查询已落库规则</div>'+
+  '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6">输入关键词过滤可用的 geosite / geoip 分类（如 openai、cn），匹配项可直接用于路由规则（geosite:openai、geoip:cn）。</div>'+
+  '<input id="geoRuleQuery" placeholder="输入关键词，如 openai / cn / telegram" oninput="filterGeoRules(this.value)" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">'+
+  '<div id="geoRuleResult" style="margin-top:10px;font-size:12px;color:var(--muted);line-height:1.6">输入关键词后展示匹配分类。</div>'+
+  '</div></div>';
+
+async function loadGeoInfo(){
+  const el = $('#geoInfoStats'); if (!el) return;
+  try {
+    const d = await api('/admin/api/geo/info');
+    const g = d.geositeCount || 0, ip = d.geoipCount || 0;
+    window._geoCats = { geosite: d.geositeCategories || [], geoip: d.geoipCategories || [] };
+    let html = '<div>geosite（域名）分类：<b>'+g+'</b> 个</div>';
+    html += '<div>geoip（IP）分类：<b>'+ip+'</b> 个</div>';
+    html += '<div>规则库版本：<b>'+(d.version ? esc(d.version) : '未更新')+'</b></div>';
+    if (d.status && d.status.state === 'done') {
+      html += '<div>上次更新：成功 <b>'+(d.status.updated||0)+'</b> / '+(d.status.total||0)+' 个分类</div>';
+    } else if (d.status && d.status.state === 'updating') {
+      html += '<div style="color:var(--accent)">正在更新中… 进度 <b>'+(d.status.step||0)+'</b> / '+(d.status.total||0)+'</div>';
+    } else if (d.status && d.status.state === 'error') {
+      html += '<div style="color:var(--danger)">上次更新失败：'+esc(d.status.message||'')+'</div>';
+    } else {
+      html += '<div style="color:var(--muted)">尚无更新记录，点击「更新规则」拉取</div>';
+    }
+    el.innerHTML = html;
+  } catch(e){ el.innerHTML = '<span style="color:var(--danger)">加载失败：'+esc(e.message)+'</span>'; }
+}
+
+// 按关键词过滤已落库的 geosite / geoip 分类，展示匹配项供添加路由规则时引用
+function filterGeoRules(kw){
+  const el = $('#geoRuleResult'); if (!el) return;
+  kw = (kw || '').trim().toLowerCase();
+  if (!kw){ el.innerHTML = '<span style="color:var(--muted)">输入关键词后展示匹配分类。</span>'; return; }
+  const cats = window._geoCats || { geosite: [], geoip: [] };
+  const hitG = cats.geosite.filter(x => x.toLowerCase().includes(kw)).slice(0, 150).map(x => 'geosite:' + x);
+  const hitI = cats.geoip.filter(x => x.toLowerCase().includes(kw)).slice(0, 50).map(x => 'geoip:' + x);
+  if (!hitG.length && !hitI.length){ el.innerHTML = '<span style="color:var(--danger)">未找到匹配的 geo 规则，换个关键词试试。</span>'; return; }
+  const all = hitG.concat(hitI);
+  let html = '<div style="margin-bottom:8px">匹配 <b>'+all.length+'</b> 条'+(all.length >= 200 ? '（已截断显示）' : '')+'，点击复制：</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px">' + all.map(x => '<span onclick="copyGeoRule(this)" title="点击复制" style="cursor:pointer;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:12px;font-family:monospace;color:var(--text)">'+x+'</span>').join('') + '</div>';
+  el.innerHTML = html;
+}
+
+function copyGeoRule(el){
+  const t = el.textContent || '';
+  if (navigator.clipboard) { navigator.clipboard.writeText(t).then(()=>{ el.style.outline='2px solid var(--accent)'; setTimeout(()=>{ el.style.outline=''; }, 800); }).catch(()=>{}); }
+  else { el.style.outline='2px solid var(--accent)'; setTimeout(()=>{ el.style.outline=''; }, 800); }
+}
+
+function openGeoUpdate(){ updateGeo(); }
 
 // 路由测试输入框回车触发（事件委托，避免模板字符串内嵌 onkeydown 引号转义问题）
 document.addEventListener('keydown', function(e){
@@ -541,7 +601,7 @@ async function loadSettings(){
       '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
       '<div class="card">'+
       fields.map(([k,label])=>'<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">'+label+'</label><input id="s_'+k+'" value="'+esc(s[k]||'')+'" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px">').join('')+
-      '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="updateGeo()">更新 Geo 规则库</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
+      '<div style="margin-top:16px"><button class="btn small" onclick="saveSettings()">保存设置</button> <button class="btn small" onclick="testProxyIp()">proxyip 测试</button> <button class="btn small" onclick="testUdp()">UDP 测试</button></div>'+
       '<div id="testResult" style="margin-top:12px;font-size:13px;line-height:1.8"></div></div>';
     state.settings = s;
     renderThemeSeg();

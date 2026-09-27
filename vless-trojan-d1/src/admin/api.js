@@ -263,6 +263,32 @@ export async function handleAdminApi(request, config, ctx) {
 		if (statusRaw) { try { status = JSON.parse(statusRaw); } catch (e) { /* ignore */ } }
 		return json({ ok: true, updating: updating === '1', version: version || null, status });
 	}
+	// ---- geo info：规则库概览（落库分类数 + 版本 + 更新状态）----
+	if (resource === 'geo' && segments[3] === 'info' && method === 'GET') {
+		const [updating, statusRaw, version] = await Promise.all([
+			GEO_KV.get('geo:updating'),
+			GEO_KV.get('geo:update_status'),
+			GEO_KV.get(GEO_KV_VERSION),
+		]);
+		let status = null;
+		if (statusRaw) { try { status = JSON.parse(statusRaw); } catch (e) { /* ignore */ } }
+		// KV list 分页统计已落库分类（geosite 全量约 1589，需 cursor 翻页），同时返回分类名列表供前端查询
+		const listKeys = async (prefix) => {
+			const names = [];
+			let cursor;
+			do {
+				const page = await GEO_KV.list({ prefix, cursor });
+				for (const k of (page.keys || [])) names.push(k.name.slice(prefix.length));
+				cursor = page.cursor;
+			} while (cursor);
+			return names;
+		};
+		const [geositeCategories, geoipCategories] = await Promise.all([
+			listKeys('geosite:'),
+			listKeys('geoip:'),
+		]);
+		return json({ ok: true, updating: updating === '1', version: version || null, status, geositeCount: geositeCategories.length, geoipCount: geoipCategories.length, geositeCategories, geoipCategories });
+	}
 
 	// ---- netstatus：网络状态检测（多目标并行采样，约 10-15 秒）----
 	if (resource === 'netstatus' && segments[3] === 'test' && method === 'POST') {
