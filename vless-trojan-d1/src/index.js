@@ -70,8 +70,12 @@ export default {
 				if (isGrpc) {
 					return await handleGrpcInbound(request, config, env);
 				}
-				// h2 入站客户端以 POST 建立（HTTP/2 请求）；GET 等普通请求交给订阅/伪装页
-				if (request.method === 'POST') {
+				// h2 入站：xray 的 http/h2 transport 默认 method=PUT（HTTP/2 prior knowledge），
+				// 链接未显式带 method 时客户端一律发 PUT；同时兼容显式 POST 与
+				// sing-box http transport 默认 method=GET 且 body 承载代理流的场景。
+				// 缺失 PUT 会令 xray h2 请求落入下方伪装页，客户端收到 HTML 挂起超时。
+				// 无 body 的普通 GET（浏览器/探测）不进代理，交下方订阅/伪装页处理
+				if (request.method === 'POST' || request.method === 'PUT' || (request.method === 'GET' && request.body)) {
 					return await handleH2Inbound(request, config, env);
 				}
 			}

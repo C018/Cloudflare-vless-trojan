@@ -15,6 +15,58 @@ function concatBytes(a, b) {
 	return out;
 }
 
+/**
+ * 尝试判定缓冲是否已含完整入站协议头（VLESS 或标准 Trojan），返回头长度；不足/无法判定返回 null。
+ * 用于 h2 入站首包：按协议头真实结构判定完整性，替代固定 60 字节阈值——
+ * 固定阈值对 <60B 的 VLESS 短首包（如空/短 payload 的 TCP、DNS 小查询）会永久挂起
+ * （h2 请求体在连接生命周期内不 EOF），且 60B 不足以容纳标准 Trojan 头
+ * （IPv4 最小 70B），截断后必然解析失败。
+ */
+function tryParseHeaderLength(buf) {
+	const len = buf.byteLength;
+	// 防御：超过 512B 仍未识别出头结构视为异常数据，立即返回避免永久累积
+	if (len >= 512) return len;
+	if (len >= 1 && buf[0] === 0x00) {
+		// VLESS: version(1) + uuid(16) + optLen(1) + opt(optLen) + cmd(1) + port(2) + atyp(1) + addr
+		if (len < 18) return null;
+		const optLen = buf[17];
+		const cmdIndex = 18 + optLen;
+		if (len < cmdIndex + 4) return null;
+		const atyp = buf[cmdIndex + 3];
+		let addrLen;
+		if (atyp === 1) addrLen = 4;
+		else if (atyp === 2) {
+			if (len < cmdIndex + 5) return null;
+			addrLen = buf[cmdIndex + 4] + 1;
+		} else if (atyp === 3) addrLen = 16;
+		else return cmdIndex + 4; // 非法 atyp：交下游 processVlessHeader 报错
+		return cmdIndex + 4 + addrLen;
+	}
+	// Trojan: hex(56) + CRLF + cmd(1) + [CRLF(2)] + atyp(1) + addr + port(2) + CRLF
+	// （兼容两种布局：trojan-gfw 官方 CMD 后 CRLF 与 xray/v2ray 实测 CMD 后无 CRLF）
+	if (len >= 60 && buf[56] === 0x0d && buf[57] === 0x0a) {
+		if (len < 60) return null;
+		const cmd = buf[58];
+		if (cmd !== 0x01 && cmd !== 0x03) return 60; // 非法 cmd：交下游报错
+		const cmdCrlf = buf[59] === 0x0d && buf[60] === 0x0a;
+		const atypIndex = cmdCrlf ? 61 : 59;
+		if (len < atypIndex + 1) return null;
+		const atyp = buf[atypIndex];
+		let addrLen;
+		if (atyp === 1) addrLen = 4;
+		else if (atyp === 3) {
+			if (len < atypIndex + 2) return null;
+			addrLen = buf[atypIndex + 1] + 1;
+		} else if (atyp === 4) addrLen = 16;
+		else return atypIndex + 1; // 非法 atyp：交下游报错
+		return atypIndex + 1 + addrLen + 2 + 2; // addr + port + final CRLF
+	}
+	// 非 VLESS（首字节非 0）且未满 60B：可能是未收齐的 Trojan 头，继续累积
+	if (len < 60) return null;
+	// 满 60B 但既非 VLESS 也非 Trojan 特征：非法数据，交下游报错
+	return len;
+}
+
 /** 从 reader 精确读取 n 字节；EOF 提前返回 null */
 async function readExactly(reader, n) {
 	const chunks = [];
@@ -51,6 +103,49 @@ function makeGrpcFrame(payload) {
 }
 
 /**
+ * xray/v2ray gRPC transport 的真实消息格式（实测 xray 26.7.28 抓包确认）：
+ * gRPC 帧 payload = protobuf 消息（field 1 = length-delimited 原始字节流）：
+ *   0x0a + varint(len) + data
+ * 早期实现把 protobuf 包裹字节（0a XX ...）直接交给 VLESS/Trojan 解析，
+ * 首字节 0x0a 被当成 VLESS version（应为 0）拒绝，grpc 入站握手必然失败。
+ * 这里在拆帧后剥掉 protobuf 层；若 payload 不是 protobuf（首字节非 0x0a），
+ * 按裸数据容忍处理（兼容旧客户端/非标准实现）。
+ */
+function decodeGrpcPayload(payload) {
+	if (payload.length < 2 || payload[0] !== 0x0a) return payload;
+	// varint 解码长度；break 时 i 指向最后一个 varint 字节，data 从 i+1 开始
+	let len = 0, shift = 0, i = 1;
+	for (; i < payload.length && shift < 35; i++) {
+		const b = payload[i];
+		len |= (b & 0x7f) << shift;
+		if ((b & 0x80) === 0) break;
+		shift += 7;
+	}
+	if (i >= payload.length || (payload[i] & 0x80) !== 0) return payload; // varint 未终结（break 时 i 指向最后一个 varint 字节）：按裸数据
+	const dataStart = i + 1;
+	if (payload.length - dataStart < len) return payload; // 声明长度超剩余：按裸数据容错
+	return payload.slice(dataStart, dataStart + len);
+}
+
+/** protobuf 包裹：0x0a + varint(len) + data */
+function encodeGrpcPayload(data) {
+	let n = data.length;
+	const varint = [];
+	for (;;) {
+		let b = n & 0x7f;
+		n >>>= 7;
+		if (n > 0) b |= 0x80;
+		varint.push(b);
+		if (n === 0) break;
+	}
+	const out = new Uint8Array(1 + varint.length + data.length);
+	out[0] = 0x0a;
+	out.set(varint, 1);
+	out.set(data, 1 + varint.length);
+	return out;
+}
+
+/**
  * h2 入站：POST {wsPath}，body 即 VLESS/Trojan 流
  */
 export async function handleH2Inbound(request, config, env) {
@@ -72,14 +167,15 @@ export async function handleH2Inbound(request, config, env) {
 			if (!io.firstReadDone) {
 				io.firstReadDone = true;
 				// 首次读取累积缓冲：CF 可能把单个 DATA 帧拆成多个 body chunk，
-				// 若 VLESS/Trojan 头被拆断，proxy-session 会误判 invalid data。
-				// 累积到协议头判定阈值（trojan 头固定 60 字节）或 EOF 再返回。
+				// 若协议头被拆断，proxy-session 会误判 invalid data。按协议头结构
+				// 判定完整性（tryParseHeaderLength）：VLESS 短首包 / Trojan 头收齐
+				// 即返回，不再硬卡 60 字节（固定阈值会挂起短首包并截断 Trojan 头）。
 				let buf = new Uint8Array(0);
 				for (;;) {
 					const { done, value } = await bodyReader.read();
 					if (done) return buf.byteLength > 0 ? buf : null;
 					buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
-					if (buf.byteLength >= 60) return buf;
+					if (tryParseHeaderLength(buf) !== null) return buf;
 				}
 			}
 			// 后续读取：直通返回单个 body 块（不做累积），保持小包低延迟转发
@@ -135,7 +231,7 @@ export async function handleGrpcInbound(request, config, env) {
 					if (pending.byteLength >= 5 + len) {
 						const payload = pending.slice(5, 5 + len);
 						pending = pending.slice(5 + len);
-						return payload;
+						return decodeGrpcPayload(payload);
 					}
 				}
 				const { done, value } = await bodyReader.read();
@@ -150,12 +246,12 @@ export async function handleGrpcInbound(request, config, env) {
 					}
 					const rest = pending;
 					pending = new Uint8Array(0);
-					return rest;
+					return decodeGrpcPayload(rest);
 				}
 				pending = concatBytes(pending, value instanceof Uint8Array ? value : new Uint8Array(value));
 			}
 		},
-		write: (data) => writer.write(makeGrpcFrame(data instanceof Uint8Array ? data : new Uint8Array(data))),
+		write: (data) => writer.write(makeGrpcFrame(encodeGrpcPayload(data instanceof Uint8Array ? data : new Uint8Array(data)))),
 		close: async () => {
 			try { await bodyReader.cancel(); } catch (e) { /* ignore */ }
 			try { await writer.close(); } catch (e) { /* ignore */ }
