@@ -103,6 +103,30 @@ export function resolveHost(request) {
  */
 export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2', 'xhttp'];
 
+/** 传输后缀映射：ws 无后缀（null）；grpc/xhttp/h2 取小写首字母 */
+const TRANSPORT_SUFFIX = { ws: null, grpc: 'g', xhttp: 'x', h2: 'h' };
+
+/**
+ * 生成节点名称：入口备注（remark） + 协议/传输后缀
+ * - vless + ws：直接显示入口备注（如 "腾讯ga"）
+ * - vless + grpc/xhttp/h2：备注-传输后缀（如 "腾讯ga-g" / "腾讯ga-x" / "腾讯ga-h"）
+ * - trojan + ws：备注-T（如 "腾讯ga-T"）
+ * - trojan + grpc/xhttp/h2：备注-T-传输后缀（如 "腾讯ga-T-g" / "腾讯ga-T-x" / "腾讯ga-T-h"）
+ * - 未配置入口备注（remark 为空）：回退 legacyFallback + "-" + transport，保持现有命名逻辑
+ * @param {'vless'|'trojan'} type
+ * @param {string} transport 传输协议（ws/grpc/xhttp/h2）
+ * @param {string} [remark] 入口备注（用户配置的 remark）
+ * @param {string} legacyFallback 未配置备注时的原有名称前缀（如 `vless-${uuid8}`）
+ */
+export function nodeName(type, transport, remark, legacyFallback) {
+	if (!remark) return `${legacyFallback}-${transport}`;
+	const s = TRANSPORT_SUFFIX[transport];
+	if (s === undefined) return type === 'trojan' ? `${remark}-T` : remark;
+	const suffix = s ? `-${s}` : '';
+	if (type === 'trojan') return `${remark}-T${suffix}`;
+	return `${remark}${suffix}`;
+}
+
 export function buildNodeLinks(config, p) {
 	const links = [];
 	const port = p.port || (p.tls ? 443 : 80);
@@ -110,13 +134,13 @@ export function buildNodeLinks(config, p) {
 	for (const u of config.vlessUsers) {
 		const wsPath = u.path || config.wsPath;
 		for (const transport of transports) {
-			links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}` }));
+			links.push(buildVlessLink({ uuid: u.uuid, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: nodeName('vless', transport, p.name || u.remark, `vless-${u.uuid.slice(0, 8)}`) }));
 		}
 	}
 	for (const u of config.trojanUsers) {
 		const wsPath = u.path || config.wsPath;
 		for (const transport of transports) {
-			links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: `trojan-${u.remark || u.password.slice(0, 8)}-${transport}` }));
+			links.push(buildTrojanLink({ password: u.password, host: p.host, port, wsPath, tls: p.tls, wsHost: p.wsHost, sni: p.sni, transport, remark: nodeName('trojan', transport, p.name || u.remark, `trojan-${u.password.slice(0, 8)}`) }));
 		}
 	}
 	return links;
@@ -142,7 +166,6 @@ export function buildBase64Subscription(config, targets) {
  */
 export function buildClashSubscription(config, targets) {
 	const proxies = [];
-	const multi = targets.length > 1;
 
 	for (const t of targets) {
 		const port = t.port || 443;
@@ -150,11 +173,10 @@ export function buildClashSubscription(config, targets) {
 		const wsHost = t.wsHost || t.host;
 		const sni = t.sni || (tls ? wsHost : '');
 		const transports = (t.transports && t.transports.length) ? t.transports : INBOUND_TRANSPORTS;
-		const prefix = multi ? (t.name || t.host) + '-' : '';
 
 		const clashProxy = (name, type, credKey, cred, wsPath, transport) => {
 			const pr = {
-				name: prefix + name,
+				name: name,
 				type,
 				server: t.host,
 				port,
@@ -181,12 +203,12 @@ export function buildClashSubscription(config, targets) {
 
 		config.vlessUsers.forEach((u, i) => {
 			for (const transport of transports) {
-				proxies.push(clashProxy(`vless-${u.remark || i + 1}-${transport}`, 'vless', 'uuid', u.uuid, u.path || config.wsPath, transport));
+				proxies.push(clashProxy(nodeName('vless', transport, t.name || u.remark, `vless-${i + 1}`), 'vless', 'uuid', u.uuid, u.path || config.wsPath, transport));
 			}
 		});
 		config.trojanUsers.forEach((u, i) => {
 			for (const transport of transports) {
-				proxies.push(clashProxy(`trojan-${u.remark || i + 1}-${transport}`, 'trojan', 'password', u.password, u.path || config.wsPath, transport));
+				proxies.push(clashProxy(nodeName('trojan', transport, t.name || u.remark, `trojan-${i + 1}`), 'trojan', 'password', u.password, u.path || config.wsPath, transport));
 			}
 		});
 	}
@@ -237,7 +259,6 @@ export function buildClashSubscription(config, targets) {
  */
 export function buildSingBoxSubscription(config, targets) {
 	const outbounds = [];
-	const multi = targets.length > 1;
 	const transportOf = (wsPath, transport, wsHost) => {
 		if (transport === 'grpc') {
 			return { type: 'grpc', service_name: serviceNameOf(wsPath) };
@@ -256,12 +277,11 @@ export function buildSingBoxSubscription(config, targets) {
 		const wsHost = t.wsHost || t.host;
 		const sni = t.sni || (t.tls ? wsHost : '');
 		const transports = (t.transports && t.transports.length) ? t.transports : INBOUND_TRANSPORTS;
-		const prefix = multi ? (t.name || t.host) + '-' : '';
 		for (const u of config.vlessUsers) {
 			for (const transport of transports) {
 				outbounds.push({
 					type: 'vless',
-					tag: prefix + `vless-${u.remark || u.uuid.slice(0, 8)}-${transport}`,
+					tag: nodeName('vless', transport, t.name || u.remark, `vless-${u.uuid.slice(0, 8)}`),
 					server: t.host,
 					server_port: port,
 					uuid: u.uuid,
@@ -275,7 +295,7 @@ export function buildSingBoxSubscription(config, targets) {
 			for (const transport of transports) {
 				outbounds.push({
 					type: 'trojan',
-					tag: prefix + `trojan-${u.remark || u.password.slice(0, 8)}-${transport}`,
+					tag: nodeName('trojan', transport, t.name || u.remark, `trojan-${u.password.slice(0, 8)}`),
 					server: t.host,
 					server_port: port,
 					password: u.password,

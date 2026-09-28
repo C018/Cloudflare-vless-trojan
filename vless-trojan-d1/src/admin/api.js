@@ -140,15 +140,15 @@ export async function handleAdminApi(request, config, ctx) {
 			if (body.ip_preference !== undefined && !['ipv4', 'ipv6', 'auto'].includes(body.ip_preference)) {
 				return json({ error: 'ip_preference 仅允许 ipv4 / ipv6 / auto' }, 400);
 			}
-			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/h2
+			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/h2/xhttp
 			if (body.entry_list !== undefined) {
 				try {
 					const arr = JSON.parse(body.entry_list);
 					if (!Array.isArray(arr) || arr.some((e) => !e || !String(e.host || '').trim())) {
 						return json({ error: 'entry_list 必须为入口数组（每项需包含 host）' }, 400);
 					}
-					if (arr.some((e) => Array.isArray(e.transports) && e.transports.some((t) => !['ws', 'grpc', 'h2'].includes(t)))) {
-						return json({ error: 'entry_list transports 仅允许 ws / grpc / h2' }, 400);
+					if (arr.some((e) => Array.isArray(e.transports) && e.transports.some((t) => !['ws', 'grpc', 'h2', 'xhttp'].includes(t)))) {
+						return json({ error: 'entry_list transports 仅允许 ws / grpc / h2 / xhttp' }, 400);
 					}
 				} catch (e) {
 					return json({ error: 'entry_list 不是合法 JSON 数组' }, 400);

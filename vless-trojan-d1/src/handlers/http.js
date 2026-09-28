@@ -2,7 +2,7 @@
  * HTTP handlers: config page, subscription endpoints, disguise page
  */
 
-import { resolveHost, buildVlessLink, buildTrojanLink, INBOUND_TRANSPORTS, buildPlainSubscription, buildBase64Subscription, buildClashSubscription, buildSingBoxSubscription } from '../generators/subscription.js';
+import { resolveHost, buildVlessLink, buildTrojanLink, INBOUND_TRANSPORTS, nodeName, buildPlainSubscription, buildBase64Subscription, buildClashSubscription, buildSingBoxSubscription } from '../generators/subscription.js';
 import { buildConfigPage } from '../generators/config-page.js';
 import { buildDisguisePage } from '../disguise/alist.js';
 import { verifyPassword } from '../admin/auth.js';
@@ -92,9 +92,9 @@ function serveCredentialSubscription(request, config, credential, opts) {
 	const links = [];
 	for (const transport of transports) {
 		if (matched.kind === 'vless') {
-			links.push(buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: `vless-${matched.user.remark || 'node'}-${transport}` }));
+			links.push(buildVlessLink({ uuid: matched.user.uuid, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: nodeName('vless', transport, opts.remark || matched.user.remark, 'vless-node') }));
 		} else {
-			links.push(buildTrojanLink({ password: matched.user.password, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: `trojan-${matched.user.remark || 'node'}-${transport}` }));
+			links.push(buildTrojanLink({ password: matched.user.password, host, port, wsPath, tls: opts.tls, wsHost: opts.wsHost, sni: opts.sni, transport, remark: nodeName('trojan', transport, opts.remark || matched.user.remark, 'trojan-node') }));
 		}
 	}
 	const body = links.join('\n') + '\n';
@@ -129,6 +129,7 @@ export async function handleHttp(request, config, env) {
 			wsHost: matched.wsHost,
 			sni: matched.sni,
 			transports: matched.transports,
+			remark: matched.remark || matched.host,
 		}
 		: config.entries.length
 			? {
@@ -138,6 +139,7 @@ export async function handleHttp(request, config, env) {
 				wsHost: config.entries[0].wsHost,
 				sni: config.entries[0].sni,
 				transports: config.entries[0].transports,
+				remark: config.entries[0].remark || config.entries[0].host,
 			}
 			: { host, port, tls, wsHost: host, sni: host };
 	// 聚合订阅：命中入口 -> 仅该入口（含勾选协议）；未命中但有入口设置 -> 聚合全部入口；
@@ -184,11 +186,11 @@ export async function handleHttp(request, config, env) {
 		const credential = decodeURIComponent(credMatch[1]);
 		if (config.uuidSet.has(credential)) {
 			const user = config.vlessIndex[credential];
-			return html(buildConfigPage(config, { host: singleOpts.host, port: singleOpts.port, tls: singleOpts.tls, wsHost: singleOpts.wsHost, sni: singleOpts.sni, transports: singleOpts.transports, credential, kind: 'vless', path: (user && user.path) || config.wsPath }));
+			return html(buildConfigPage(config, { host: singleOpts.host, port: singleOpts.port, tls: singleOpts.tls, wsHost: singleOpts.wsHost, sni: singleOpts.sni, transports: singleOpts.transports, entries: config.entries, credential, kind: 'vless', path: (user && user.path) || config.wsPath }));
 		}
 		if (config.passwordSet.has(credential)) {
 			const user = config.trojanIndex[credential];
-			return html(buildConfigPage(config, { host: singleOpts.host, port: singleOpts.port, tls: singleOpts.tls, wsHost: singleOpts.wsHost, sni: singleOpts.sni, transports: singleOpts.transports, credential, kind: 'trojan', path: (user && user.path) || config.wsPath }));
+			return html(buildConfigPage(config, { host: singleOpts.host, port: singleOpts.port, tls: singleOpts.tls, wsHost: singleOpts.wsHost, sni: singleOpts.sni, transports: singleOpts.transports, entries: config.entries, credential, kind: 'trojan', path: (user && user.path) || config.wsPath }));
 		}
 	}
 
