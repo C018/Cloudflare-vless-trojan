@@ -16,6 +16,29 @@ function concatBytes(a, b) {
 }
 
 /**
+ * 动态扩容追加：单缓冲原地写入，按需 2 倍扩容，避免每读一块全量重建数组的 O(N²) 拷贝。
+ * 首包累积 / grpc 帧缓冲在弱网分片多（几十块小片）时拷贝量可降一个数量级。
+ * @param {{buf:Uint8Array|null,len:number}} st 累积状态
+ * @param {Uint8Array} value 新数据
+ */
+function appendBytes(st, value) {
+	if (!st.buf) {
+		st.buf = new Uint8Array(Math.max(value.byteLength, 4096));
+		st.buf.set(value, 0);
+		st.len = value.byteLength;
+		return;
+	}
+	const need = st.len + value.byteLength;
+	if (need > st.buf.length) {
+		const nb = new Uint8Array(Math.max(st.buf.length * 2, need));
+		nb.set(st.buf.subarray(0, st.len), 0);
+		st.buf = nb;
+	}
+	st.buf.set(value, st.len);
+	st.len = need;
+}
+
+/**
  * 尝试判定缓冲是否已含完整入站协议头（VLESS 或标准 Trojan），返回头长度；不足/无法判定返回 null。
  * 用于 h2 入站首包：按协议头真实结构判定完整性，替代固定 60 字节阈值——
  * 固定阈值对 <60B 的 VLESS 短首包（如空/短 payload 的 TCP、DNS 小查询）会永久挂起
@@ -170,16 +193,16 @@ export async function handleH2Inbound(request, config, env) {
 				// 若协议头被拆断，proxy-session 会误判 invalid data。按协议头结构
 				// 判定完整性（tryParseHeaderLength）：VLESS 短首包 / Trojan 头收齐
 				// 即返回，不再硬卡 60 字节（固定阈值会挂起短首包并截断 Trojan 头）。
-				let buf = new Uint8Array(0);
+				const st = { buf: null, len: 0 };
 				for (;;) {
 					const { done, value } = await bodyReader.read();
-					if (done) return buf.byteLength > 0 ? buf : null;
-					buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
+					if (done) return st.len > 0 ? st.buf.subarray(0, st.len) : null;
+					appendBytes(st, value instanceof Uint8Array ? value : new Uint8Array(value));
 					// 协议头完整性判定：tryParseHeaderLength 返回头长度；须等到
 					// 实际缓冲 ≥ 头长度才返回（长度已知但字节未收齐时继续累积，
 					// 否则域名/地址会被截断交给下游解析，如 "www.g"）
-					const hlen = tryParseHeaderLength(buf);
-					if (hlen !== null && buf.byteLength >= hlen) return buf;
+					const hlen = tryParseHeaderLength(st.buf.subarray(0, st.len));
+					if (hlen !== null && st.len >= hlen) return st.buf.subarray(0, st.len);
 				}
 			}
 			// 后续读取：直通返回单个 body 块（不做累积），保持小包低延迟转发
@@ -233,16 +256,16 @@ export async function handleXHTTPInbound(request, config, env) {
 		read: async () => {
 			if (!io.firstReadDone) {
 				io.firstReadDone = true;
-				let buf = new Uint8Array(0);
+				const st = { buf: null, len: 0 };
 				for (;;) {
 					const { done, value } = await bodyReader.read();
-					if (done) return buf.byteLength > 0 ? buf : null;
-					buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
+					if (done) return st.len > 0 ? st.buf.subarray(0, st.len) : null;
+					appendBytes(st, value instanceof Uint8Array ? value : new Uint8Array(value));
 					// 协议头完整性判定：tryParseHeaderLength 返回头长度；须等到
 					// 实际缓冲 ≥ 头长度才返回（长度已知但字节未收齐时继续累积，
 					// 否则域名/地址会被截断交给下游解析，如 "www.g"）
-					const hlen = tryParseHeaderLength(buf);
-					if (hlen !== null && buf.byteLength >= hlen) return buf;
+					const hlen = tryParseHeaderLength(st.buf.subarray(0, st.len));
+					if (hlen !== null && st.len >= hlen) return st.buf.subarray(0, st.len);
 				}
 			}
 			const { done, value } = await bodyReader.read();
@@ -330,15 +353,15 @@ export async function handleXHTTPAutoDown(request, config, env, uuid) {
 				io.firstReadDone = true;
 				// 首包累积：与 stream-one 相同，按协议头结构判定完整性；
 				// 首包可能被拆进多个分包 POST 到达（罕见），需跨 POST 累积
-				let buf = new Uint8Array(0);
+				const st = { buf: null, len: 0 };
 				for (;;) {
 					const { done, value } = await upReader.read();
-					if (done) return buf.byteLength > 0 ? buf : null;
+					if (done) return st.len > 0 ? st.buf.subarray(0, st.len) : null;
 					if (!value || value.byteLength === 0) continue;
 					session.lastActivity = Date.now();
-					buf = concatBytes(buf, value instanceof Uint8Array ? value : new Uint8Array(value));
-					const hlen = tryParseHeaderLength(buf);
-					if (hlen !== null && buf.byteLength >= hlen) return buf;
+					appendBytes(st, value instanceof Uint8Array ? value : new Uint8Array(value));
+					const hlen = tryParseHeaderLength(st.buf.subarray(0, st.len));
+					if (hlen !== null && st.len >= hlen) return st.buf.subarray(0, st.len);
 				}
 			}
 			const { done, value } = await upReader.read();
@@ -420,35 +443,37 @@ export async function handleGrpcInbound(request, config, env) {
 	const { readable, writable } = new TransformStream();
 	const writer = writable.getWriter();
 
-	let pending = new Uint8Array(0);
+	let pending = { buf: null, len: 0 };
 
 	const io = {
 		read: async () => {
 			// 持续补充缓冲直到凑齐一个完整 gRPC 帧
 			for (;;) {
-				if (pending.byteLength >= 5) {
-					const len = (pending[1] << 24) | (pending[2] << 16) | (pending[3] << 8) | pending[4];
-					if (pending.byteLength >= 5 + len) {
-						const payload = pending.slice(5, 5 + len);
-						pending = pending.slice(5 + len);
+				if (pending.len >= 5) {
+					const len = (pending.buf[1] << 24) | (pending.buf[2] << 16) | (pending.buf[3] << 8) | pending.buf[4];
+					if (pending.len >= 5 + len) {
+						const payload = pending.buf.slice(5, 5 + len);
+						// 剩余字节原地前移，避免每次拆帧全量重建缓冲
+						pending.buf.copyWithin(0, 5 + len, pending.len);
+						pending.len -= 5 + len;
 						return decodeGrpcPayload(payload);
 					}
 				}
 				const { done, value } = await bodyReader.read();
 				if (done) {
-					if (pending.byteLength === 0) return null;
+					if (pending.len === 0) return null;
 					// 尾部不足一帧：不足 5 字节的 gRPC 帧头残留直接丢弃
 					// （无法构成有效载荷，混入会把帧头字节当业务数据转发）；
 					// 其余按剩余原始字节容忍处理
-					if (pending.byteLength < 5) {
-						pending = new Uint8Array(0);
+					if (pending.len < 5) {
+						pending.len = 0;
 						return new Uint8Array(0);
 					}
-					const rest = pending;
-					pending = new Uint8Array(0);
+					const rest = pending.buf.slice(0, pending.len);
+					pending.len = 0;
 					return decodeGrpcPayload(rest);
 				}
-				pending = concatBytes(pending, value instanceof Uint8Array ? value : new Uint8Array(value));
+				appendBytes(pending, value instanceof Uint8Array ? value : new Uint8Array(value));
 			}
 		},
 		write: (data) => writer.write(makeGrpcFrame(encodeGrpcPayload(data instanceof Uint8Array ? data : new Uint8Array(data)))),

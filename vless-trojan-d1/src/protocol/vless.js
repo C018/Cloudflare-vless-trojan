@@ -40,48 +40,49 @@ export function processVlessHeader(protocolBuffer, uuidSet) {
 	if (protocolBuffer.byteLength < 24) {
 		return { hasError: true, message: 'invalid data' };
 	}
-	// createWsIO 归一化为 Uint8Array；统一视图后 subarray 零拷贝读取
+	// createWsIO 归一化为 Uint8Array；统一视图后 subarray 零拷贝读取。
+	// 直接用下标读字节替代 DataView：避免每个新连接分配 DataView（getUint8 → view[i]，
+	// getUint16 → (view[i]<<8)|view[i+1]，大端与 DataView 默认一致）。
 	const view = protocolBuffer instanceof Uint8Array ? protocolBuffer : new Uint8Array(protocolBuffer);
-	const dataView = new DataView(view.buffer, view.byteOffset, view.byteLength);
 	const uuid = bytesToUuid(view.subarray(1, 17));
 
 	if (!uuidSet.has(uuid)) {
 		return { hasError: true, message: 'invalid user' };
 	}
 
-	const optLength = dataView.getUint8(17);
+	const optLength = view[17];
 	const cmdIndex = 18 + optLength;
 	if (protocolBuffer.byteLength < cmdIndex + 4) {
 		return { hasError: true, message: 'invalid data' };
 	}
-	const command = dataView.getUint8(cmdIndex);
+	const command = view[cmdIndex];
 	if (command !== 1 && command !== 2) {
 		return { hasError: true, message: `command ${command} is not supported` };
 	}
 
 	const portIndex = cmdIndex + 1;
-	const portRemote = dataView.getUint16(portIndex);
-	const addressType = dataView.getUint8(portIndex + 2);
+	const portRemote = (view[portIndex] << 8) | view[portIndex + 1];
+	const addressType = view[portIndex + 2];
 	let addressValue, addressLength, addressValueIndex;
 
 	switch (addressType) {
 		case 1: // IPv4
 			addressLength = 4;
 			addressValueIndex = portIndex + 3;
-			addressValue = `${dataView.getUint8(addressValueIndex)}.${dataView.getUint8(addressValueIndex + 1)}.${dataView.getUint8(addressValueIndex + 2)}.${dataView.getUint8(addressValueIndex + 3)}`;
+			addressValue = `${view[addressValueIndex]}.${view[addressValueIndex + 1]}.${view[addressValueIndex + 2]}.${view[addressValueIndex + 3]}`;
 			break;
 		case 2: // Domain
 			if (protocolBuffer.byteLength < portIndex + 4) {
 				return { hasError: true, message: 'invalid data' };
 			}
-			addressLength = dataView.getUint8(portIndex + 3);
+			addressLength = view[portIndex + 3];
 			addressValueIndex = portIndex + 4;
 			addressValue = TEXT_DECODER.decode(view.subarray(addressValueIndex, addressValueIndex + addressLength));
 			break;
 		case 3: // IPv6
 			addressLength = 16;
 			addressValueIndex = portIndex + 3;
-			addressValue = `${dataView.getUint16(addressValueIndex).toString(16)}:${dataView.getUint16(addressValueIndex + 2).toString(16)}:${dataView.getUint16(addressValueIndex + 4).toString(16)}:${dataView.getUint16(addressValueIndex + 6).toString(16)}:${dataView.getUint16(addressValueIndex + 8).toString(16)}:${dataView.getUint16(addressValueIndex + 10).toString(16)}:${dataView.getUint16(addressValueIndex + 12).toString(16)}:${dataView.getUint16(addressValueIndex + 14).toString(16)}`;
+			addressValue = `${(view[addressValueIndex] << 8 | view[addressValueIndex + 1]).toString(16)}:${(view[addressValueIndex + 2] << 8 | view[addressValueIndex + 3]).toString(16)}:${(view[addressValueIndex + 4] << 8 | view[addressValueIndex + 5]).toString(16)}:${(view[addressValueIndex + 6] << 8 | view[addressValueIndex + 7]).toString(16)}:${(view[addressValueIndex + 8] << 8 | view[addressValueIndex + 9]).toString(16)}:${(view[addressValueIndex + 10] << 8 | view[addressValueIndex + 11]).toString(16)}:${(view[addressValueIndex + 12] << 8 | view[addressValueIndex + 13]).toString(16)}:${(view[addressValueIndex + 14] << 8 | view[addressValueIndex + 15]).toString(16)}`;
 			break;
 		default:
 			return { hasError: true, message: `invalid addressType: ${addressType}` };

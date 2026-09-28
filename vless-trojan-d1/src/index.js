@@ -36,10 +36,15 @@ function matchXhttpAutoPath(config, path) {
 		const prefix = base + '/';
 		if (path.startsWith(prefix)) {
 			const rest = path.slice(prefix.length);
-			const seg = rest.split('/')[0];
-			// xray 26.x auto 模式随机段实际为带连字符的 UUID v4（36 字符）；老版本/部分实现为 32 位纯 hex，一并兼容
-			if (/^[0-9a-fA-F-]{36}$/.test(seg) && seg.split('-').length === 5
-				|| /^[0-9a-fA-F]{32}$/.test(seg)) {
+			// 第一段（至下一个 '/'）即随机 uuid 段；indexOf 截取避免 split 数组分配
+			const slash = rest.indexOf('/');
+			const seg = slash >= 0 ? rest.slice(0, slash) : rest;
+			const n = seg.length;
+			// xray 26.x auto 模式随机段为带连字符的 UUID v4（36 字符，连字符位置固定 8/13/18/23）；
+			// 老版本/部分实现为 32 位纯 hex，一并兼容。长度前置过滤 + 固定位置校验，
+			// 替代每次 split('-') 数组分配与全串正则
+			if ((n === 36 && seg[8] === '-' && seg[13] === '-' && seg[18] === '-' && seg[23] === '-' && /^[0-9a-fA-F-]{36}$/.test(seg))
+				|| (n === 32 && /^[0-9a-fA-F]{32}$/.test(seg))) {
 				return { basePath: base, uuid: seg, scopes: config.inboundPathMap.get(base) };
 			}
 		}
@@ -78,19 +83,24 @@ export default {
 				return await handleCron(request, env);
 			}
 
-			// 3) 代理入站：按入站路径映射 + 请求特征自动分发（同一凭据同时支持 ws / grpc / h2）
+			// 3) 代理入站：按入站路径映射 + 请求特征自动分发（同一凭据同时支持 ws / grpc / h2 / xhttp）
 			const config = await createRequestConfig(request, env);
 			// grpc 客户端（xray 等）以 /{serviceName}/Tun 建流；旧订阅链接的 serviceName
 			// 曾带前导斜杠，会请求 //path/Tun 双斜杠路径。压缩连续斜杠后兼容这类存量链接，
-			// 正常路径无连续斜杠时 replace 返回原值，不影响现有路由。
-			const xhttpAutoMatch = matchXhttpAutoPath(config, path);
-			const scopes = config.inboundPathMap.get(path)
+			// 正常路径无连续斜杠时跳过 replace（原实现对每个代理请求都跑一次全串正则）。
+			let scopes = config.inboundPathMap.get(path)
 				// XHTTP 客户端（xray 26.x）对 path 自动补尾斜杠（POST /{path}/），
 				// 归一化尾斜杠后再查映射，兼容 xhttp 与既有 ws/grpc/h2 路径。
 				|| config.inboundPathMap.get(path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path)
-				|| config.inboundPathMap.get(path.replace(/\/+/g, '/'))
-				// XHTTP auto 模式：GET/POST /{basePath}/{randomUuid}[/N]，路径带随机 UUID 段
-				|| (xhttpAutoMatch ? xhttpAutoMatch.scopes : null);
+				|| config.inboundPathMap.get(path.includes('//') ? path.replace(/\/+/g, '/') : path);
+			// XHTTP auto 模式：GET/POST /{basePath}/{randomUuid}[/N]，路径带随机 UUID 段。
+			// 仅当精确路径未命中、且方法为 GET/POST、且路径存在第二段时才跑 auto 匹配——
+			// 否则每个请求（含伪装页/订阅/后台探测）都遍历全部 base path 做前缀+正则，纯 CPU 浪费。
+			let xhttpAutoMatch = null;
+			if (!scopes && (request.method === 'GET' || request.method === 'POST') && path.length > 2) {
+				xhttpAutoMatch = matchXhttpAutoPath(config, path);
+				if (xhttpAutoMatch) scopes = xhttpAutoMatch.scopes;
+			}
 			if (scopes && scopes.length > 0) {
 				config._inboundScope = composeInboundScope(scopes);
 				const upgrade = String(request.headers.get('Upgrade') || '').toLowerCase();

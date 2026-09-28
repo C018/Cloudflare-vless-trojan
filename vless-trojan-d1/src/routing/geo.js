@@ -36,6 +36,11 @@ export async function getGeoData(env, type, category) {
 	if (!data) {
 		data = bootstrap(type, category);
 	}
+	// geosite 域名列表预小写化一次：engine 匹配侧已按小写 host 比较，
+	// 避免每次连接、每个候选域各做一次 toLowerCase 全串分配（cn 分类数百条时显著）
+	if (type === 'geosite' && Array.isArray(data)) {
+		data = data.map((d) => d.toLowerCase());
+	}
 	cache.set(key, { data, ts: Date.now() });
 	return data;
 }

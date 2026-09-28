@@ -8,14 +8,27 @@ import { getGeoData } from './geo.js';
 
 /**
  * 解析规则字符串
+ * 结果按规则串缓存：decideRoute 每条规则在每个新连接上都会调用 parseRule，
+ * 规则数多时重复正则解析成为纯 CPU 热点；缓存后 O(1) 命中（上限 512，超限清空重建）。
  * @param {string} ruleStr
- * @returns {{type:string, value:string, categories?:string[]}|null}
+ * @returns {{type:string, value:string, categories?:string[], _lcValue?:string}|null}
  */
+const parsedRuleCache = new Map();
+const PARSED_RULE_CACHE_MAX = 512;
 export function parseRule(ruleStr) {
 	if (!ruleStr) return null;
 	let s = String(ruleStr).trim();
 	if (!s) return null;
+	if (parsedRuleCache.has(s)) return parsedRuleCache.get(s);
+	let parsed = parseRuleUncached(s);
+	// 预小写 value：匹配时域名/关键字比较都走小写，避免每次连接重复 toLowerCase 全串分配
+	if (parsed && parsed.value) parsed._lcValue = parsed.value.toLowerCase();
+	if (parsedRuleCache.size >= PARSED_RULE_CACHE_MAX) parsedRuleCache.clear();
+	parsedRuleCache.set(s, parsed);
+	return parsed;
+}
 
+function parseRuleUncached(s) {
 	// 多 geosite 分类逗号分隔
 	const geositeMatch = s.match(/^geosite:(.+)$/i);
 	if (geositeMatch) {
@@ -112,13 +125,14 @@ function matchCidr(ipAddr, cidr) {
 }
 
 /**
- * 域名后缀匹配（含子域名）
+ * 域名后缀匹配（含子域名）。入参须已小写化（调用方预小写一次，避免每次比较全串扫描分配）。
+ * 语义与原实现等价：精确相等或以后缀结尾（'xabc.com' 命中 'abc.com' 的宽松匹配保留），
+ * 原 'h.endsWith("." + d)' 分支已被 'h.endsWith(d)' 覆盖（以 '.d' 结尾必然以 'd' 结尾），
+ * 去掉可省每次比较的 '.'+d 字符串拼接分配。
  */
-function matchDomain(hostname, domain) {
-	const h = hostname.toLowerCase();
-	const d = domain.toLowerCase();
-	if (h === d) return true;
-	return h.endsWith('.' + d) || h.endsWith(d);
+function matchDomain(lcHost, lcDomain) {
+	if (lcHost === lcDomain) return true;
+	return lcHost.endsWith(lcDomain);
 }
 
 const regexCache = new Map();
@@ -139,18 +153,21 @@ function getRegex(pattern) {
  * @param {Object} env
  */
 export async function matchParsedRule(parsed, addressRemote, isIP, env) {
+	// 域名类规则共用一次小写化（domain/full/keyword 与 geosite 循环均复用），
+	// 避免每条规则、每个候选域各做一次全串 toLowerCase 分配
+	const lcHost = isIP ? '' : addressRemote.toLowerCase();
 	switch (parsed.type) {
 		case 'domain': {
 			if (isIP) return false;
-			return matchDomain(addressRemote, parsed.value);
+			return matchDomain(lcHost, parsed._lcValue);
 		}
 		case 'full': {
 			if (isIP) return false;
-			return addressRemote.toLowerCase() === parsed.value.toLowerCase();
+			return lcHost === parsed._lcValue;
 		}
 		case 'keyword': {
 			if (isIP) return false;
-			return addressRemote.toLowerCase().includes(parsed.value.toLowerCase());
+			return lcHost.includes(parsed._lcValue);
 		}
 		case 'regexp': {
 			if (isIP) return false;
@@ -166,7 +183,7 @@ export async function matchParsedRule(parsed, addressRemote, isIP, env) {
 			for (const category of parsed.categories) {
 				const domains = await getGeoData(env, 'geosite', category);
 				for (const d of domains) {
-					if (matchDomain(addressRemote, d)) return true;
+					if (matchDomain(lcHost, d)) return true;
 				}
 			}
 			return false;
