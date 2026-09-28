@@ -10,9 +10,9 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "javascript-obfuscator": "^4.1.1",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.142.0"
   },
   "dependencies": {
     "fflate": "^0.8.3"

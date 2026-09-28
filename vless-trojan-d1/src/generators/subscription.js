@@ -1,6 +1,7 @@
 /**
  * Generators: single node links, subscription output (plain / clash / sing-box)
- * 入站传输模式（config.entryTransport: ws / grpc / h2）决定链接/配置的 network 与 path/serviceName。
+ * 入站传输模式（config.entryTransport: ws / grpc / xhttp）决定链接/配置的 network 与 path/serviceName；
+ * h2 分支保留用于显式配置 transports 含 h2 的旧客户端（sing-box http transport / 旧版 xray）。
  */
 
 // 0-RTT 参数（?ed=2560）与默认 TLS 指纹（random）
@@ -39,6 +40,9 @@ export function buildVlessLink(p) {
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', serviceNameOf(p.wsPath));
+	} else if (transport === 'xhttp') {
+		params.set('mode', 'stream-one');
+		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else if (transport === 'h2') {
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
@@ -65,6 +69,9 @@ export function buildTrojanLink(p) {
 	});
 	if (transport === 'grpc') {
 		params.set('serviceName', serviceNameOf(p.wsPath));
+	} else if (transport === 'xhttp') {
+		params.set('mode', 'stream-one');
+		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else if (transport === 'h2') {
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
@@ -87,12 +94,13 @@ export function resolveHost(request) {
 
 /**
  * 构建聚合节点列表（vless 多 uuid + trojan 多密码）
- * 入站已支持全类型自动（ws/grpc/h2），每个用户输出三种传输节点；
+ * 入站已支持全类型自动（ws/grpc/xhttp），每个用户输出三种传输节点；
+ * h2 节点生成分支保留：entry 显式配置 transports 含 h2 时仍可输出旧版链接。
  * 每个用户优先使用其自定义入站路径（u.path），未设置时回退全局 config.wsPath。
  * @param {Object} config
  * @param {Object} p {host, port, tls, wsHost, sni}
  */
-export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2'];
+export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'xhttp'];
 
 export function buildNodeLinks(config, p) {
 	const links = [];
@@ -160,6 +168,8 @@ export function buildClashSubscription(config, targets) {
 			};
 			if (transport === 'grpc') {
 				pr['grpc-opts'] = { 'grpc-service-name': serviceNameOf(wsPath) };
+			} else if (transport === 'xhttp') {
+				pr['xhttp-opts'] = { mode: 'stream-one', path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
 			} else if (transport === 'h2') {
 				pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
 			} else {
@@ -197,6 +207,12 @@ export function buildClashSubscription(config, targets) {
 		if (pr.network === 'grpc') {
 			lines.push(`    grpc-opts:`);
 			lines.push(`      grpc-service-name: ${pr['grpc-opts']['grpc-service-name']}`);
+		} else if (pr.network === 'xhttp') {
+			lines.push(`    xhttp-opts:`);
+			lines.push(`      mode: ${pr['xhttp-opts'].mode}`);
+			lines.push(`      path: ${pr['xhttp-opts'].path}`);
+			lines.push(`      host:`);
+			lines.push(`        - ${pr._wsHost}`);
 		} else if (pr.network === 'h2') {
 			lines.push(`    h2-opts:`);
 			lines.push(`      path: ${pr['h2-opts'].path}`);
@@ -224,6 +240,9 @@ export function buildSingBoxSubscription(config, targets) {
 	const transportOf = (wsPath, transport, wsHost) => {
 		if (transport === 'grpc') {
 			return { type: 'grpc', service_name: serviceNameOf(wsPath) };
+		}
+		if (transport === 'xhttp') {
+			return { type: 'xhttp', mode: 'stream-one', path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: wsHost };
 		}
 		if (transport === 'h2') {
 			return { type: 'http', host: [wsHost], path: wsPath.startsWith('/') ? wsPath : `/${wsPath}` };

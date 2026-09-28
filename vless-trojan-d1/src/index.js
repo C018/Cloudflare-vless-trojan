@@ -13,7 +13,7 @@
 import { connect } from 'cloudflare:sockets';
 import { createRequestConfig, composeInboundScope } from './config/defaults.js';
 import { handleWebSocketUpgrade } from './handlers/websocket.js';
-import { handleH2Inbound, handleGrpcInbound } from './handlers/entry.js';
+import { handleH2Inbound, handleGrpcInbound, handleXHTTPInbound, handleXHTTPAutoDown, handleXHTTPAutoUp } from './handlers/entry.js';
 import { handleHttp } from './handlers/http.js';
 import { handleAdminApi, runGeoUpdateTask } from './admin/api.js';
 import { buildAdminUI } from './admin/ui.js';
@@ -21,6 +21,31 @@ import { handleCron, scheduled } from './cron.js';
 
 // Workers 平台 Socket 建连能力注入：direct / proxyip / socks5 / http 出站均依赖 globalThis.connect
 globalThis.connect = connect;
+
+/**
+ * XHTTP auto 模式路径匹配：xray 26.x 的 xhttp transport 在 auto 模式下
+ * 将数据写入 POST /{basePath}/{randomUuid}（或 /{basePath}/{randomUuid}/0），
+ * 路径带随机 UUID 段，无法直接命中 inboundPathMap 的精确路径。
+ * 匹配规则：以某入站 basePath + '/' 开头，且第一段为 32 位 hex（随机 UUID）。
+ * 返回 { basePath, uuid, scopes }；不匹配返回 null。
+ */
+function matchXhttpAutoPath(config, path) {
+	if (path.length <= 2) return null;
+	for (const base of config.inboundPathMap.keys()) {
+		if (base.length < 2) continue;
+		const prefix = base + '/';
+		if (path.startsWith(prefix)) {
+			const rest = path.slice(prefix.length);
+			const seg = rest.split('/')[0];
+			// xray 26.x auto 模式随机段实际为带连字符的 UUID v4（36 字符）；老版本/部分实现为 32 位纯 hex，一并兼容
+			if (/^[0-9a-fA-F-]{36}$/.test(seg) && seg.split('-').length === 5
+				|| /^[0-9a-fA-F]{32}$/.test(seg)) {
+				return { basePath: base, uuid: seg, scopes: config.inboundPathMap.get(base) };
+			}
+		}
+	}
+	return null;
+}
 
 export default {
 	/**
@@ -58,17 +83,45 @@ export default {
 			// grpc 客户端（xray 等）以 /{serviceName}/Tun 建流；旧订阅链接的 serviceName
 			// 曾带前导斜杠，会请求 //path/Tun 双斜杠路径。压缩连续斜杠后兼容这类存量链接，
 			// 正常路径无连续斜杠时 replace 返回原值，不影响现有路由。
-			const scopes = config.inboundPathMap.get(path) || config.inboundPathMap.get(path.replace(/\/+/g, '/'));
+			const xhttpAutoMatch = matchXhttpAutoPath(config, path);
+			const scopes = config.inboundPathMap.get(path)
+				// XHTTP 客户端（xray 26.x）对 path 自动补尾斜杠（POST /{path}/），
+				// 归一化尾斜杠后再查映射，兼容 xhttp 与既有 ws/grpc/h2 路径。
+				|| config.inboundPathMap.get(path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path)
+				|| config.inboundPathMap.get(path.replace(/\/+/g, '/'))
+				// XHTTP auto 模式：GET/POST /{basePath}/{randomUuid}[/N]，路径带随机 UUID 段
+				|| (xhttpAutoMatch ? xhttpAutoMatch.scopes : null);
 			if (scopes && scopes.length > 0) {
 				config._inboundScope = composeInboundScope(scopes);
 				const upgrade = String(request.headers.get('Upgrade') || '').toLowerCase();
 				const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
-				const isGrpc = path.endsWith('/Tun') || contentType.includes('application/grpc');
-				if (upgrade === 'websocket' && !isGrpc) {
+				// grpc 判定仅看 /Tun 后缀：XHTTP（stream-one）请求同样携带
+				// application/grpc 头，若按 content-type 判定会被误入 grpc 帧拆包，
+				// 导致裸协议流被 gRPC 帧头污染、会话错乱。
+				const isGrpc = path.endsWith('/Tun');
+				// XHTTP auto/stream-up/packet-up 跨请求会话：
+				//   GET /{basePath}/{uuid} → 建立下行流会话
+				//   POST /{basePath}/{uuid}[/N] → 上行数据（长流或分包）
+				// 必须优先于其它判定：GET 无 body 原本会落伪装页、POST 分包
+				// 按 stream-one 处理会建立错乱隧道（下行数据写进 POST 响应被丢弃）。
+				if (xhttpAutoMatch && request.method === 'GET') {
+					return await handleXHTTPAutoDown(request, config, env, xhttpAutoMatch.uuid);
+				}
+				if (xhttpAutoMatch && request.method === 'POST') {
+					return await handleXHTTPAutoUp(request, config, env, xhttpAutoMatch.uuid);
+				}
+				// XHTTP（xray 26.x stream-one）：POST {path}/，Content-Type:
+				// application/grpc（客户端默认带，除非显式禁用 NoGRPCHeader）。
+				// 与 grpc 的区别在于路径无 /Tun 后缀。
+				const isXhttp = !isGrpc && request.method === 'POST' && contentType.includes('application/grpc');
+				if (upgrade === 'websocket' && !isGrpc && !isXhttp) {
 					return await handleWebSocketUpgrade(request, config, env);
 				}
 				if (isGrpc) {
 					return await handleGrpcInbound(request, config, env);
+				}
+				if (isXhttp) {
+					return await handleXHTTPInbound(request, config, env);
 				}
 				// h2 入站：xray 的 http/h2 transport 默认 method=PUT（HTTP/2 prior knowledge），
 				// 链接未显式带 method 时客户端一律发 PUT；同时兼容显式 POST 与

@@ -244,7 +244,7 @@ export function parseEntries(settings) {
 			sni: String(e.sni || '').trim() || wsHost,
 			wsHost,
 			remark: String(e.remark || '').trim(),
-			transports: Array.isArray(e.transports) ? e.transports.filter((t) => ['ws', 'grpc', 'h2'].includes(t)) : ['ws', 'grpc', 'h2'],
+			transports: Array.isArray(e.transports) ? e.transports.filter((t) => ['ws', 'grpc', 'h2', 'xhttp'].includes(t)) : ['ws', 'grpc', 'xhttp'],
 		};
 	}).filter((e) => e.host);
 }

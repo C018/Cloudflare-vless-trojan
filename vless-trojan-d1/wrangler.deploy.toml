@@ -7,6 +7,7 @@ crons = ["0 3 * * *"]
 
 # 放置区域：香港（gcp:asia-east2），区域放置
 [placement]
+mode = "targeted"
 region = "gcp:asia-east2"
 
 # Workers 日志：开启 logpush / traces
