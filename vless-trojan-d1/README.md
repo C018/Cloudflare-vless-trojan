@@ -53,7 +53,6 @@ vless-trojan-d1/
 │   │   ├── http.js         # HTTP CONNECT 出站
 │   │   ├── vless.js        # VLESS 出站（ws 隧道，TCP/UDP）
 │   │   ├── vless-grpc.js   # VLESS 出站（grpc 传输）
-│   │   ├── vless-h2.js     # VLESS 出站（h2 传输）
 │   │   ├── vless-httpupgrade.js # VLESS 出站（httpupgrade 传输）
 │   │   ├── vless-raw.js    # VLESS 出站（raw / 原生 TCP）
 │   │   ├── udp.js          # UDP 帧拆组

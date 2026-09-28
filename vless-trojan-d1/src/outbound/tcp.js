@@ -12,6 +12,16 @@ import { OUTBOUND_DIRECT, OUTBOUND_REJECT, OUTBOUND_SOCKS5, OUTBOUND_HTTP, OUTBO
 const DOH_CACHE_TTL = 300_000;
 const dohCache = new Map(); // hostname -> { ip, ts }
 
+/** DoH 失败负缓存（TTL 45s）：多源全部失败时缓存失败结论，
+ *  避免 DoH 不可达/慢源时段同一域名每个新连接都重复等待超时（cfResolvedDomain 探测 800ms） */
+const DOH_NEGATIVE_TTL = 45_000;
+const dohNegativeCache = new Map(); // cacheKey -> ts
+const DOH_NEGATIVE_MAX = 5000;
+
+/** 建连日志采样窗口（同一 hostname 窗口内只打第一条"直连目标"日志，降噪高频连接日志） */
+const CONNECT_LOG_SAMPLE_MS = 5000;
+const connectLogTs = new Map();
+
 /** DoH 多源端点（模块级复用，避免每调用重建数组） */
 const DOH_ENDPOINTS = [
 	'https://8.8.8.8/resolve',
@@ -35,6 +45,12 @@ export async function resolveViaDoH(hostname, log, rtype = 'A', timeoutMs = 2500
 	if (hit && Date.now() - hit.ts < DOH_CACHE_TTL) {
 		// 缓存命中为正常路径高频日志，降噪不打
 		return hit.ip;
+	}
+	// 负缓存命中：近期多源全部失败，直接返回 null（调用方走原生 DNS/降级路径），
+	// 不重复发起 DoH 等待；TTL 到期后自动重试
+	const negTs = dohNegativeCache.get(cacheKey);
+	if (negTs && Date.now() - negTs < DOH_NEGATIVE_TTL) {
+		return null;
 	}
 	// 多源 DoH：按用户偏好 DNS 不用 Cloudflare（移除 cloudflare-dns.com）；
 	// Google IP 型优先，国内非 CF 域名型兜底。多源并行发起：任一源成功解析即 abort
@@ -71,8 +87,14 @@ export async function resolveViaDoH(hostname, log, rtype = 'A', timeoutMs = 2500
 	});
 	const results = await Promise.all(tasks);
 	const resolved = results.find((r) => r) || null;
-	if (resolved) dohCache.set(cacheKey, { ip: resolved, ts: Date.now() });
-	else log(`doh resolve failed: ${hostname} (${rtype})`);
+	if (resolved) {
+		dohCache.set(cacheKey, { ip: resolved, ts: Date.now() });
+		dohNegativeCache.delete(cacheKey); // 成功即清负缓存，允许后续立即重试
+	} else {
+		if (dohNegativeCache.size >= DOH_NEGATIVE_MAX) dohNegativeCache.clear();
+		dohNegativeCache.set(cacheKey, Date.now());
+		log(`doh resolve failed: ${hostname} (${rtype})`);
+	}
 	return resolved;
 }
 
@@ -241,17 +263,26 @@ async function tryConnect(host, port, log) {
  * 已知 CF 域名 / IP 字面量不受影响（保持直接建连，地址族由调用方字面量决定）。
  */
 async function connectDirect(config, hostname, port, isIpLiteral, cfDomain, log) {
+	// 高频连接日志降噪：同一 hostname 在采样窗口内只输出第一条"直连目标"日志，
+	// 避免高频连接（大流量分段/心跳）反复刷日志占 CPU 与日志流；错误/回退路径保留全量
+	const logConnect = (() => {
+		const nowMs = Date.now();
+		const last = connectLogTs.get(hostname);
+		if (last && nowMs - last < CONNECT_LOG_SAMPLE_MS) return () => {};
+		connectLogTs.set(hostname, nowMs);
+		return log;
+	})();
 	if (!isIpLiteral && !cfDomain) {
 		const pref = config.ipPreference || 'ipv4';
 		// ipv4 优先：DoH A（短超时 1200ms，失败快速降级原生 DNS 保连通）→ 原生 DNS → DoH AAAA
 		if (pref === 'ipv4') {
 			const ip = await resolveViaDoH(hostname, log, 'A', 1200);
 			if (ip) {
-				log(`direct ${hostname}:${port} -> ipv4 ${ip}:${port}`);
+				logConnect(`direct ${hostname}:${port} -> ipv4 ${ip}:${port}`);
 				let s = await tryConnect(ip, port, log);
 				if (s) return s;
 			}
-			log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
+			logConnect(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
 			let s = await tryConnect(hostname, port, log);
 			if (s) return s;
 			// A 记录不存在（纯 IPv6 域名，如 ipv6-api.speedtest.net）→ 查 AAAA，方括号字面量直连 IPv6
@@ -273,7 +304,7 @@ async function connectDirect(config, hostname, port, isIpLiteral, cfDomain, log)
 				let s = await tryConnect(ip6Literal, port, log);
 				if (s) return s;
 			}
-			log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
+			logConnect(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
 			let s = await tryConnect(hostname, port, log);
 			if (s) return s;
 			const ip = await resolveViaDoH(hostname, log, 'A');
@@ -285,7 +316,7 @@ async function connectDirect(config, hostname, port, isIpLiteral, cfDomain, log)
 			return null;
 		}
 		// auto：原生 DNS 直连优先：直接用 hostname 建连，交给 CF 运行时 DNS，省去 DoH 预解析延迟
-		log(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
+		logConnect(`direct ${hostname}:${port} -> native dns ${hostname}:${port}`);
 		let s = await tryConnect(hostname, port, log);
 		if (s) return s;
 		// 原生 DNS 失败（抛错/返回 null）才回退 DoH 解析出 IP 再连一次

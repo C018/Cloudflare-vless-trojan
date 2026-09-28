@@ -30,14 +30,13 @@ export const OUTBOUND_HTTP = 'http';
 export const OUTBOUND_VLESS = 'vless';
 
 // ---- VLESS outbound transports ----
-export const OUTBOUND_TRANSPORTS = ['raw', 'ws', 'grpc', 'httpupgrade', 'h2'];
+export const OUTBOUND_TRANSPORTS = ['raw', 'ws', 'grpc', 'httpupgrade'];
 export const OUTBOUND_TRANSPORT_DEFAULT = 'ws';
 
 // ---- Inbound transports (entry) ----
 // 全类型自动入站：同一 uuid/password 同时支持 ws / grpc / xhttp（按请求特征自动分发）。
 // xhttp 为 xray 26.x 的 stream-one 传输（旧 http/h2 transport 已移除并迁移到 XHTTP），
-// 单 POST 请求双向流，Worker 侧与 h2 同为裸流桥接；H3（QUIC）在 Workers 平台不可行。
-// h2 入站代码保留：兼容 sing-box http transport / 旧版 xray 客户端（订阅生成分支亦保留）。
+// 单 POST 请求双向流，Worker 侧为裸流桥接；H3（QUIC）在 Workers 平台不可行。
 // httpupgrade 入站依赖非 WS 的 raw Upgrade 裸流（101 Switching Protocols 后直接透传字节），
 // 而 Cloudflare Workers 平台仅允许 WebSocket 协议升级、且无法自定义 101 响应体/后续裸流，
 // 因此 httpupgrade 入站在纯 Workers 上无法真正实现（帧不兼容），不纳入自动分发。

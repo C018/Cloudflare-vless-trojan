@@ -56,7 +56,10 @@ const obfCli = path.join(root, 'node_modules/javascript-obfuscator/bin/javascrip
 execFileSync(process.execPath, [
 	obfCli, plainTmp, '--output', outObf,
 	'--compact', 'true',
-	'--self-defending', 'false'
+	'--self-defending', 'false',
+	// 标识符改名用最短 mangled（hex 长标识符让混淆产物比明文大 75%+，拖慢 Worker 冷启动下载/解析；
+	// mangled 按作用域输出 a/b/c 单字符名，产物体积接近明文）
+	'--identifier-names-generator', 'mangled'
 	// 混淆降档（1.0.50）：关闭 string-array 字符串数组混淆（原 threshold 0.5 + base64 解码
 	// 是冷启动最大开销源），仅保留 compact 压缩，显著加快 Worker 冷启动/首个请求建连
 ], { stdio: 'inherit', timeout: 300000 });

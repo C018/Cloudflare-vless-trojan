@@ -1,6 +1,6 @@
 /**
  * Single-node config page generator
- * 入站支持 ws / grpc / h2 / xhttp 共享同一入站路径，页面按入口场景展示节点链接：
+ * 入站支持 ws / grpc / xhttp 共享同一入站路径，页面按入口场景展示节点链接：
  *  - 无入口：当前请求域名 + 全协议
  *  - 单入口：该入口域名 + 入口勾选协议 + 入口备注
  *  - 多入口：顶部显示"多入口"，逐入口展示备注与勾选协议（不暴露具体域名）
@@ -12,7 +12,6 @@ import { buildVlessLink, buildTrojanLink, nodeName, INBOUND_TRANSPORTS } from '.
 const TRANSPORT_NAMES = {
 	ws: 'WebSocket (ws)',
 	grpc: 'gRPC',
-	h2: 'HTTP/2 (h2)',
 	xhttp: 'XHTTP (stream-one)',
 };
 

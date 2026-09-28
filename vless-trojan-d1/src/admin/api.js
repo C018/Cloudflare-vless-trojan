@@ -129,7 +129,7 @@ export async function handleAdminApi(request, config, ctx) {
 			const body = await readBody(request);
 			if (!body) return json({ error: 'bad body' }, 400);
 			// 白名单：仅允许写入受支持的设置项，屏蔽已废弃的 CDN/优选/entry_transport 等字段。
-			// 入站已改为全类型自动（ws/grpc/h2），entry_transport 不再参与入站分发，禁止再写入。
+			// 入站已改为全类型自动（ws/grpc/xhttp），entry_transport 不再参与入站分发，禁止再写入。
 			const ALLOWED_SETTINGS = new Set([
 				'ws_path', 'default_outbound', 'proxyip', 'udp_outbound', 'ip_preference',
 				'disguise_title', 'disguise_subtitle',
@@ -140,15 +140,15 @@ export async function handleAdminApi(request, config, ctx) {
 			if (body.ip_preference !== undefined && !['ipv4', 'ipv6', 'auto'].includes(body.ip_preference)) {
 				return json({ error: 'ip_preference 仅允许 ipv4 / ipv6 / auto' }, 400);
 			}
-			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/h2/xhttp
+			// 多入口列表结构校验：必须为 JSON 数组，每项含 host 且 transports 仅允许 ws/grpc/xhttp
 			if (body.entry_list !== undefined) {
 				try {
 					const arr = JSON.parse(body.entry_list);
 					if (!Array.isArray(arr) || arr.some((e) => !e || !String(e.host || '').trim())) {
 						return json({ error: 'entry_list 必须为入口数组（每项需包含 host）' }, 400);
 					}
-					if (arr.some((e) => Array.isArray(e.transports) && e.transports.some((t) => !['ws', 'grpc', 'h2', 'xhttp'].includes(t)))) {
-						return json({ error: 'entry_list transports 仅允许 ws / grpc / h2 / xhttp' }, 400);
+					if (arr.some((e) => Array.isArray(e.transports) && e.transports.some((t) => !['ws', 'grpc', 'xhttp'].includes(t)))) {
+						return json({ error: 'entry_list transports 仅允许 ws / grpc / xhttp' }, 400);
 					}
 				} catch (e) {
 					return json({ error: 'entry_list 不是合法 JSON 数组' }, 400);
@@ -182,7 +182,7 @@ export async function handleAdminApi(request, config, ctx) {
 				if ((body.type === 'socks5' || body.type === 'http') && !body.address) return 'address required';
 				if (body.type === 'vless') {
 					if (!body.uuid) return 'vless requires uuid';
-					if (body.transport !== undefined && !['raw', 'ws', 'grpc', 'httpupgrade', 'h2'].includes(body.transport)) return 'invalid vless transport';
+					if (body.transport !== undefined && !['raw', 'ws', 'grpc', 'httpupgrade'].includes(body.transport)) return 'invalid vless transport';
 				}
 				if ((body.username && !body.password) || (!body.username && body.password)) return 'username and password must be set together';
 				// socks5/http 不支持 UDP（仅 vless 支持），保存时强制 udp=0

@@ -260,7 +260,7 @@ const TAB_DEFS = {
     {k:'enable',label:'启用',type:'checkbox'},
     {k:'status',label:'状态',type:'status'}
   ]},
-  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade','h2']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade/h2 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
+  outbounds:{ title:'出站代理', api:'outbounds', fields:[{k:'type',label:'类型',type:'select',opts:['socks5','http','vless']},{k:'name',label:'名称'},{k:'address',label:'地址'},{k:'port',label:'端口',type:'number'},{k:'username',label:'用户名(仅socks5/http)'},{k:'password',label:'密码(仅socks5/http)'},{k:'uuid',label:'UUID(仅vless)'},{k:'transport',label:'传输(仅vless)',type:'select',opts:['raw','ws','grpc','httpupgrade']},{k:'path',label:'Path(仅vless; grpc 为 serviceName)',placeholder:'ws/httpupgrade 填路径; grpc 填 serviceName(留空为 /Tun)'},{k:'tls',label:'TLS',type:'checkbox'},{k:'sni',label:'SNI(仅vless)',placeholder:'留空则使用地址作为连接主机与SNI'},{k:'udp',label:'UDP',type:'checkbox'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] },
   rules:   { title:'路由规则', api:'routing-rules', fields:[{k:'rule',label:'规则(geosite:cn / geoip:cn / domain: / full: / keyword: / ip-cidr: / regexp:)'},{k:'outbound',label:'出站(direct / reject / 出站名)'},{k:'enable',label:'启用',type:'checkbox'},{k:'sort',label:'排序',type:'number'}] }
 };
 
@@ -590,7 +590,7 @@ async function loadSettings(){
       api('/admin/api/version').catch(()=>({ version:'' }))
     ]);
     const fields = [
-      ['ws_path','入站路径（ws / grpc / h2 共享；用户未自定义路径时回退到此值）'],
+      ['ws_path','入站路径（ws / grpc / xhttp 共享；用户未自定义路径时回退到此值）'],
       ['default_outbound','默认出站 (direct / 出站名)'],
       ['proxyip','proxyip（代理 IP 或域名[:端口]，也可直接填出站名使用该出站代理出站；访问 Cloudflare 及开 CF CDN 网站使用；仅默认出站为 direct 时生效）'],
       ['udp_outbound','UDP 出站代理（出站名，仅 vless 支持 UDP）'],
@@ -609,7 +609,7 @@ async function loadSettings(){
       '<div class="card" style="display:flex;align-items:center;justify-content:space-between;background:var(--info-bg);color:var(--info-text);font-size:13px;border-radius:10px;padding:10px 16px;margin-bottom:16px">'+
         '<span>系统版本</span><b id="sysVersion">'+(ver.version?esc(ver.version):'未知')+'</b>'+
       '</div>'+
-      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / h2 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
+      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">入站已自动兼容 ws / grpc / xhttp 三种传输类型（同一凭据同时可用）。此处仅需设置共享入站路径；单个用户可在「VLESS 用户 / Trojan 用户」中自定义路径，留空则使用本全局路径。</div>'+
       '<div class="card">'+
       '<label style="display:block;font-size:13px;color:var(--muted);margin:10px 0 4px">出站 IP 协议优先级</label>'+
       '<select id="s_ip_preference" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text)">'+
@@ -633,7 +633,7 @@ async function saveSettings(){
   catch(e){ toast(e.message); }
 }
 
-const ENTRY_TRANSPORTS = ['ws', 'grpc', 'h2', 'xhttp'];
+const ENTRY_TRANSPORTS = ['ws', 'grpc', 'xhttp'];
 let entryBase = '';
 
 function ensureEntryStyle(){
@@ -728,7 +728,7 @@ async function loadEntry(){
     if (!list.length) list = [{ host: '', port: '', sni: '', wsHost: '', remark: '', transports: [] }];
     ensureEntryStyle();
     mc.innerHTML = '<div class="page-title">入口设置</div>' +
-      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2 / xhttp）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（全协议）。</div>' +
+      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / xhttp）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（全协议）。</div>' +
       '<div id="entryCards">' + list.map(entryCardHtml).join('') + '</div>' +
       '<div class="entry-actions"><button class="btn small" onclick="addEntry()">+ 添加入口</button>' +
       '<button id="saveEntryBtn" class="btn small entry-save" onclick="saveEntry()" disabled>保存入口设置</button></div>';

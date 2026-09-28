@@ -1,5 +1,5 @@
 /**
- * 通用代理会话核心：与具体入口传输（ws / h2 / grpc）解耦。
+ * 通用代理会话核心：与具体入口传输（ws / grpc / xhttp）解耦。
  * 通过 io 接口读写字节流：
  *   read()  → Promise<Uint8Array|null>   null 表示 EOF
  *   write(d) → Promise<void> | void      向客户端写回
@@ -435,7 +435,7 @@ async function handleUDP(io, config, addressType, addressRemote, portRemote, fir
 	}
 
 	// 出站传输类型：raw 为 VLESS UDP over TCP（流式，每个数据报需 [2B len] 长度前缀帧），
-	// ws/grpc/httpupgrade/h2 为消息型传输（每个消息即一个 UDP 数据报，无需前缀）。
+	// ws/grpc/httpupgrade 为消息型传输（每个消息即一个 UDP 数据报，无需前缀）。
 	// 与 vlessOutboundConnect 内部默认值逻辑保持一致（transport 缺省 'ws'）。
 	const udpTransport = (vlessOb.transport || 'ws').trim().toLowerCase();
 	const isRawUdp = udpTransport === 'raw';

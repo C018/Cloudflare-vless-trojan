@@ -137,7 +137,7 @@ async function resetExpiredTraffic(DB, users, table) {
 
 /**
  * 构建入站路径 → 允许的凭据作用域映射。
- * 每个路径同时注册 {path}（ws/h2）与 {path}/Tun（grpc）。
+ * 每个路径同时注册 {path}（ws）与 {path}/Tun（grpc）。
  * 全局路径作用域为 all；用户自定义路径作用域限定为该用户凭据。
  * @param {string} wsPath 全局入站路径
  * @param {Array} vlessUsers
@@ -244,7 +244,7 @@ export function parseEntries(settings) {
 			sni: String(e.sni || '').trim() || wsHost,
 			wsHost,
 			remark: String(e.remark || '').trim(),
-			transports: Array.isArray(e.transports) ? e.transports.filter((t) => ['ws', 'grpc', 'h2', 'xhttp'].includes(t)) : ['ws', 'grpc', 'xhttp'],
+			transports: Array.isArray(e.transports) ? e.transports.filter((t) => ['ws', 'grpc', 'xhttp'].includes(t)) : ['ws', 'grpc', 'xhttp'],
 		};
 	}).filter((e) => e.host);
 }

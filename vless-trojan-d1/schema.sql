@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS vless_users (
   created_at INTEGER DEFAULT (unixepoch()),
   up INTEGER DEFAULT 0,
   down INTEGER DEFAULT 0,
-  -- 入站路径（留空则使用全局设置 ws_path；支持 ws/grpc/h2 全类型入站）
+  -- 入站路径（留空则使用全局设置 ws_path；支持 ws/grpc/xhttp 全类型入站）
   path TEXT DEFAULT '',
   -- 到期时间（Unix 秒；0 表示永不过期）
   expire_at INTEGER DEFAULT 0,
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS trojan_users (
   created_at INTEGER DEFAULT (unixepoch()),
   up INTEGER DEFAULT 0,
   down INTEGER DEFAULT 0,
-  -- 入站路径（留空则使用全局设置 ws_path；支持 ws/grpc/h2 全类型入站）
+  -- 入站路径（留空则使用全局设置 ws_path；支持 ws/grpc/xhttp 全类型入站）
   path TEXT DEFAULT '',
   -- 到期时间（Unix 秒；0 表示永不过期）
   expire_at INTEGER DEFAULT 0,
@@ -86,7 +86,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('entry_port', ''),
   ('entry_sni', ''),
   ('entry_ws_host', ''),
-  -- entry_transport: ws / grpc / h2 (inbound transport; /ws main entry, /ws/Tun reserved for gRPC users)
+  -- entry_transport: ws / grpc / xhttp (inbound transport; /ws main entry, /ws/Tun reserved for gRPC users)
   ('entry_transport', 'ws');
 
 -- 种子：默认用户（部署后可进后台修改/删除）

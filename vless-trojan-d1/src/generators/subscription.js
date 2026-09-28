@@ -1,8 +1,7 @@
 /**
  * Generators: single node links, subscription output (plain / clash / sing-box)
- * 入站传输模式（ws / grpc / h2 / xhttp）决定链接/配置的 network 与 path/serviceName；
- * xhttp 节点统一输出 mode=stream-one（xray auto 依赖跨请求会话，CF 无状态环境不可靠，订阅不生成 auto）；
- * h2 分支（sing-box http transport / 旧版 xray）与 ws 保留兼容。
+ * 入站传输模式（ws / grpc / xhttp）决定链接/配置的 network 与 path/serviceName；
+ * xhttp 节点统一输出 mode=stream-one（xray auto 依赖跨请求会话，CF 无状态环境不可靠，订阅不生成 auto）。
  */
 
 // 0-RTT 参数（?ed=2560）与默认 TLS 指纹（random）
@@ -44,8 +43,6 @@ export function buildVlessLink(p) {
 	} else if (transport === 'xhttp') {
 		params.set('mode', 'stream-one');
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
-	} else if (transport === 'h2') {
-		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
 		params.set('path', with0rtt(p.wsPath));
 	}
@@ -73,8 +70,6 @@ export function buildTrojanLink(p) {
 	} else if (transport === 'xhttp') {
 		params.set('mode', 'stream-one');
 		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
-	} else if (transport === 'h2') {
-		params.set('path', p.wsPath.startsWith('/') ? p.wsPath : `/${p.wsPath}`);
 	} else {
 		params.set('path', with0rtt(p.wsPath));
 	}
@@ -95,26 +90,25 @@ export function resolveHost(request) {
 
 /**
  * 构建聚合节点列表（vless 多 uuid + trojan 多密码）
- * 每个用户输出白名单内全部传输类型节点（ws / grpc / h2 / xhttp）；
- * h2 节点生成分支保留：entry 显式配置 transports 含 h2 时仍可输出旧版链接。
+ * 每个用户输出白名单内全部传输类型节点（ws / grpc / xhttp）。
  * 每个用户优先使用其自定义入站路径（u.path），未设置时回退全局 config.wsPath。
  * @param {Object} config
  * @param {Object} p {host, port, tls, wsHost, sni}
  */
-export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2', 'xhttp'];
+export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'xhttp'];
 
-/** 传输后缀映射：ws 无后缀（null）；grpc/xhttp/h2 取小写首字母 */
-const TRANSPORT_SUFFIX = { ws: null, grpc: 'g', xhttp: 'x', h2: 'h' };
+/** 传输后缀映射：ws 无后缀（null）；grpc/xhttp 取小写首字母 */
+const TRANSPORT_SUFFIX = { ws: null, grpc: 'g', xhttp: 'x' };
 
 /**
  * 生成节点名称：入口备注（remark） + 协议/传输后缀
  * - vless + ws：直接显示入口备注（如 "腾讯ga"）
- * - vless + grpc/xhttp/h2：备注-传输后缀（如 "腾讯ga-g" / "腾讯ga-x" / "腾讯ga-h"）
+ * - vless + grpc/xhttp：备注-传输后缀（如 "腾讯ga-g" / "腾讯ga-x"）
  * - trojan + ws：备注-T（如 "腾讯ga-T"）
- * - trojan + grpc/xhttp/h2：备注-T-传输后缀（如 "腾讯ga-T-g" / "腾讯ga-T-x" / "腾讯ga-T-h"）
+ * - trojan + grpc/xhttp：备注-T-传输后缀（如 "腾讯ga-T-g" / "腾讯ga-T-x"）
  * - 未配置入口备注（remark 为空）：回退 legacyFallback + "-" + transport，保持现有命名逻辑
  * @param {'vless'|'trojan'} type
- * @param {string} transport 传输协议（ws/grpc/xhttp/h2）
+ * @param {string} transport 传输协议（ws/grpc/xhttp）
  * @param {string} [remark] 入口备注（用户配置的 remark）
  * @param {string} legacyFallback 未配置备注时的原有名称前缀（如 `vless-${uuid8}`）
  */
@@ -193,8 +187,6 @@ export function buildClashSubscription(config, targets) {
 				pr['grpc-opts'] = { 'grpc-service-name': serviceNameOf(wsPath) };
 			} else if (transport === 'xhttp') {
 				pr['xhttp-opts'] = { mode: 'stream-one', path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
-			} else if (transport === 'h2') {
-				pr['h2-opts'] = { path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: [wsHost] };
 			} else {
 				pr['ws-opts'] = { path: with0rtt(wsPath), headers: { Host: wsHost } };
 			}
@@ -236,11 +228,6 @@ export function buildClashSubscription(config, targets) {
 			lines.push(`      path: ${pr['xhttp-opts'].path}`);
 			lines.push(`      host:`);
 			lines.push(`        - ${pr._wsHost}`);
-		} else if (pr.network === 'h2') {
-			lines.push(`    h2-opts:`);
-			lines.push(`      path: ${pr['h2-opts'].path}`);
-			lines.push(`      host:`);
-			lines.push(`        - ${pr._wsHost}`);
 		} else {
 			lines.push(`    ws-opts:`);
 			lines.push(`      path: ${pr['ws-opts'].path}`);
@@ -265,9 +252,6 @@ export function buildSingBoxSubscription(config, targets) {
 		}
 		if (transport === 'xhttp') {
 			return { type: 'xhttp', mode: 'stream-one', path: wsPath.startsWith('/') ? wsPath : `/${wsPath}`, host: wsHost };
-		}
-		if (transport === 'h2') {
-			return { type: 'http', host: [wsHost], path: wsPath.startsWith('/') ? wsPath : `/${wsPath}` };
 		}
 		return { type: 'ws', path: with0rtt(wsPath), headers: { Host: wsHost } };
 	};

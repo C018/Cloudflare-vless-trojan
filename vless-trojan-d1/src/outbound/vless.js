@@ -16,7 +16,6 @@ import { safeCloseWebSocket } from './stream.js';
 import { rawConnect } from './vless-raw.js';
 import { httpUpgradeConnect } from './vless-httpupgrade.js';
 import { grpcConnect } from './vless-grpc.js';
-import { h2Connect } from './vless-h2.js';
 
 export const VLESS_OUTBOUND_TIMEOUT = 10000;
 
@@ -48,8 +47,6 @@ export async function vlessOutboundConnect(config, command, addressType, address
 			link = await httpUpgradeConnect(config, log);
 		} else if (transport === 'grpc') {
 			link = await grpcConnect(config, log);
-		} else if (transport === 'h2') {
-			link = await h2Connect(config, log);
 		}
 	} catch (err) {
 		log(`[VLESS/${transport}] connect failed: ${err.message}`);

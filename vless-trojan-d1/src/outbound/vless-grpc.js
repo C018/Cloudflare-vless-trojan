@@ -84,6 +84,24 @@ function concatBytes(a, b) {
 	return out;
 }
 
+/** 动态扩容追加：单缓冲原地写入，按需 2 倍扩容，避免每块 concatBytes 全量重建的 O(N²) 拷贝 */
+function appendBytes(st, value) {
+	if (!st.buf) {
+		st.buf = new Uint8Array(Math.max(value.byteLength, 4096));
+		st.buf.set(value, 0);
+		st.len = value.byteLength;
+		return;
+	}
+	const need = st.len + value.byteLength;
+	if (need > st.buf.length) {
+		const nb = new Uint8Array(Math.max(st.buf.length * 2, need));
+		nb.set(st.buf.subarray(0, st.len), 0);
+		st.buf = nb;
+	}
+	st.buf.set(value, st.len);
+	st.len = need;
+}
+
 /** 从 reader 精确读取 n 字节；EOF 提前返回 null */
 async function readExactly(reader, n) {
 	const chunks = [];
@@ -170,7 +188,8 @@ export async function grpcConnect(config, log) {
 	// ---- gRPC 解帧状态机 ----
 	const state = {
 		needLen: 5,      // 还需读取的字节数（先读 5 字节前缀）
-		buf: new Uint8Array(0),
+		buf: null,       // 动态累积缓冲（appendBytes 维护）
+		len: 0,          // 当前有效字节数
 		msgLen: 0,       // 当前消息 payload 长度
 		controller: null,
 		extra: null      // 读帧时多读的字节（回退）
@@ -181,31 +200,31 @@ export async function grpcConnect(config, log) {
 		while (d.byteLength > 0) {
 			if (state.needLen > 0) {
 				const take = Math.min(state.needLen, d.byteLength);
-				state.buf = concatBytes(state.buf, d.slice(0, take));
-				d = d.slice(take);
+				appendBytes(state, d.subarray(0, take));
+				d = d.subarray(take);
 				state.needLen -= take;
 				if (state.needLen === 0) {
-					if (state.buf.byteLength === 5) {
+					if (state.len === 5) {
 						state.msgLen = new DataView(state.buf.buffer, state.buf.byteOffset, 5).getUint32(1, false);
-						state.buf = new Uint8Array(0);
+						state.buf = null; state.len = 0;
 						state.needLen = state.msgLen;
 						if (state.msgLen === 0) state.needLen = 5; // 空消息：跳过
 					} else {
 						// 前缀不完整异常：重置
-						state.buf = new Uint8Array(0);
+						state.buf = null; state.len = 0;
 						state.needLen = 5;
 					}
 				}
 			} else {
 				const take = Math.min(state.msgLen, d.byteLength);
-				state.buf = concatBytes(state.buf, d.slice(0, take));
-				d = d.slice(take);
+				appendBytes(state, d.subarray(0, take));
+				d = d.subarray(take);
 				state.msgLen -= take;
 				if (state.msgLen === 0) {
-					if (state.buf.byteLength > 0) {
-						try { controller.enqueue(state.buf); } catch (e) { /* ignore */ }
+					if (state.len > 0) {
+						try { controller.enqueue(state.buf.subarray(0, state.len)); } catch (e) { /* ignore */ }
 					}
-					state.buf = new Uint8Array(0);
+					state.buf = null; state.len = 0;
 					state.needLen = 5;
 				}
 			}
