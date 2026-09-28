@@ -5,6 +5,7 @@
 import { resolveHost, buildVlessLink, buildTrojanLink, INBOUND_TRANSPORTS, buildPlainSubscription, buildBase64Subscription, buildClashSubscription, buildSingBoxSubscription } from '../generators/subscription.js';
 import { buildConfigPage } from '../generators/config-page.js';
 import { buildDisguisePage } from '../disguise/alist.js';
+import { verifyPassword } from '../admin/auth.js';
 
 function html(content, status = 200) {
 	return new Response(content, {
@@ -18,28 +19,53 @@ function text(content, contentType = 'text/plain; charset=utf-8') {
 }
 
 /**
- * 订阅入口
+ * 订阅入口（聚合）
+ * token 校验与凭据隔离：
+ *  - 无 token 或 token 无效 -> 404（不泄露任何配置）
+ *  - token = admin 密码     -> 全量订阅（所有用户 × 所有入口）
+ *  - token = 某 UUID        -> 仅该 vless 用户的订阅
+ *  - token = 某 trojan 密码 -> 仅该 trojan 用户的订阅
  * @param {import('@cloudflare/workers-types').Request} request
  * @param {Object} config
  * @param {Array} targets 目标入口数组，每项 {host, port, tls, wsHost, sni, transports, name}
  */
-function serveSubscription(request, config, targets) {
+async function serveSubscription(request, config, targets) {
 	const url = new URL(request.url);
+	const token = url.searchParams.get('token') || '';
+
+	// 凭据隔离：命中 token 时仅输出该凭据对应节点的订阅
+	let subConfig = config;
+	if (token) {
+		if (config.uuidSet.has(token)) {
+			const user = config.vlessIndex[token];
+			subConfig = { ...config, vlessUsers: [user], trojanUsers: [] };
+		} else if (config.passwordSet.has(token)) {
+			const user = config.trojanIndex[token];
+			subConfig = { ...config, vlessUsers: [], trojanUsers: [user] };
+		} else if (config.adminPasswordHash && await verifyPassword(token, config.adminPasswordHash)) {
+			subConfig = config; // admin 密码 -> 全量
+		} else {
+			return new Response('Not Found', { status: 404 });
+		}
+	} else {
+		return new Response('Not Found', { status: 404 });
+	}
+
 	const format = (url.searchParams.get('format') || 'base64').toLowerCase();
 
 	switch (format) {
 		case 'plain':
-			return text(buildPlainSubscription(config, targets));
+			return text(buildPlainSubscription(subConfig, targets));
 		case 'clash':
 		case 'yaml':
-			return text(buildClashSubscription(config, targets), 'text/yaml; charset=utf-8');
+			return text(buildClashSubscription(subConfig, targets), 'text/yaml; charset=utf-8');
 		case 'singbox':
 		case 'sing-box':
 		case 'json':
-			return text(buildSingBoxSubscription(config, targets), 'application/json; charset=utf-8');
+			return text(buildSingBoxSubscription(subConfig, targets), 'application/json; charset=utf-8');
 		case 'base64':
 		default:
-			return text(buildBase64Subscription(config, targets));
+			return text(buildBase64Subscription(subConfig, targets));
 	}
 }
 
@@ -92,7 +118,9 @@ export async function handleHttp(request, config, env) {
 		return hs.some((h) => h === requestHost);
 	};
 	const matched = config.entries.find(matchEntry);
-	// 单凭据页/单凭据订阅：命中入口时仅输出该入口勾选的协议，否则按当前域名全协议
+	// 单凭据页/单凭据订阅：命中入口 -> 仅输出该入口勾选的协议；
+	// 未命中但已配置入口 -> 使用首个入口的域名与勾选协议（修复：添加入口后未按入口生成）；
+	// 无入口配置 -> 按当前域名 + 全协议
 	const singleOpts = matched
 		? {
 			host: matched.host,
@@ -102,7 +130,16 @@ export async function handleHttp(request, config, env) {
 			sni: matched.sni,
 			transports: matched.transports,
 		}
-		: { host, port, tls, wsHost: host, sni: host };
+		: config.entries.length
+			? {
+				host: config.entries[0].host,
+				port: Number(config.entries[0].port) || 443,
+				tls: true,
+				wsHost: config.entries[0].wsHost,
+				sni: config.entries[0].sni,
+				transports: config.entries[0].transports,
+			}
+			: { host, port, tls, wsHost: host, sni: host };
 	// 聚合订阅：命中入口 -> 仅该入口（含勾选协议）；未命中但有入口设置 -> 聚合全部入口；
 	// 无入口设置 -> 当前域名 + 全协议（保持原行为）
 	let targets;
@@ -132,7 +169,7 @@ export async function handleHttp(request, config, env) {
 
 	// 订阅端点
 	if (path === '/subscribe') {
-		return serveSubscription(request, config, targets);
+		return await serveSubscription(request, config, targets);
 	}
 
 	// /{credential}/subscribe

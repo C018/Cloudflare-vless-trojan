@@ -1,14 +1,22 @@
 /**
  * Single-node config page generator
- * 入站已支持全类型自动（ws/grpc/h2 共享同一入站路径），页面展示三种传输的节点链接。
+ * 入站支持 ws / grpc / h2 / xhttp 共享同一入站路径，页面按当前入口勾选（默认全协议）展示节点链接。
  */
 
-import { buildVlessLink, buildTrojanLink } from './subscription.js';
+import { buildVlessLink, buildTrojanLink, INBOUND_TRANSPORTS } from './subscription.js';
+
+/** 传输类型展示名 */
+const TRANSPORT_NAMES = {
+	ws: 'WebSocket (ws)',
+	grpc: 'gRPC',
+	h2: 'HTTP/2 (h2)',
+	xhttp: 'XHTTP (stream-one)',
+};
 
 /**
- * /{uuid|password} 页面：展示该凭据对应的节点链接（ws / grpc / h2）
+ * /{uuid|password} 页面：展示该凭据对应的节点链接（默认 ws / grpc / h2 / xhttp）
  * @param {Object} config
- * @param {Object} p {host, port, tls, wsHost, sni, credential, kind, path}
+ * @param {Object} p {host, port, tls, wsHost, sni, credential, kind, path, transports}
  */
 export function buildConfigPage(config, p) {
 	const host = p.host;
@@ -24,14 +32,10 @@ export function buildConfigPage(config, p) {
 		return buildTrojanLink({ ...base, password: p.credential, transport, remark: `trojan-${remark}` });
 	};
 
-	const links = [
-		{ key: 'ws', name: 'WebSocket (ws)', link: linkOf('ws', 'ws') },
-		{ key: 'grpc', name: 'gRPC', link: linkOf('grpc', 'grpc') },
-		{ key: 'h2', name: 'HTTP/2 (h2)', link: linkOf('h2', 'h2') },
-	].filter((l) => {
-		const transports = (p.transports && p.transports.length) ? p.transports : ['ws', 'grpc', 'h2'];
-		return transports.includes(l.key);
-	});
+	const transports = (p.transports && p.transports.length) ? p.transports : INBOUND_TRANSPORTS;
+	const links = transports
+		.filter((t) => TRANSPORT_NAMES[t])
+		.map((t) => ({ key: t, name: TRANSPORT_NAMES[t], link: linkOf(t, t) }));
 
 	const label = p.kind === 'vless' ? 'VLESS' : 'Trojan';
 	const transportNames = links.map((l) => l.key).join(' / ');

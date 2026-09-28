@@ -633,7 +633,7 @@ async function saveSettings(){
   catch(e){ toast(e.message); }
 }
 
-const ENTRY_TRANSPORTS = ['ws', 'grpc', 'h2'];
+const ENTRY_TRANSPORTS = ['ws', 'grpc', 'h2', 'xhttp'];
 let entryBase = '';
 
 function ensureEntryStyle(){
@@ -650,14 +650,14 @@ function ensureEntryStyle(){
     '.entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}' +
     '@media (max-width:560px){.entry-grid{grid-template-columns:1fr}}' +
     '.entry-field label{display:block;font-size:12px;color:var(--muted,#8a94a6);margin-bottom:5px;font-weight:500}' +
-    '.entry-field input{width:100%;padding:9px 12px;border:1px solid var(--border,#e6e8ee);border-radius:10px;background:#f7f8fa;font-size:14px;color:var(--text,#1d1d1f);outline:none;transition:all .2s ease;box-sizing:border-box}' +
+    '.entry-field input{width:100%;padding:9px 12px;border:1px solid var(--border,#e6e8ee);border-radius:10px;background:var(--input-bg);font-size:14px;color:var(--text,#1d1d1f);outline:none;transition:all .2s ease;box-sizing:border-box}' +
     '.entry-field input:focus{background:var(--card);border-color:var(--primary,#0a84ff);box-shadow:0 0 0 3px rgba(10,132,255,.12)}' +
     '.entry-chips{display:flex;gap:8px;flex-wrap:wrap;padding-top:2px}' +
-    '.entry-chip{display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;border:1px solid var(--border,#e6e8ee);background:#f2f3f7;color:#6b7280;font-size:13px;font-weight:500;cursor:pointer;transition:all .2s ease;user-select:none}' +
+    '.entry-chip{display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;border:1px solid var(--border,#e6e8ee);background:var(--badge-off);color:var(--muted);font-size:13px;font-weight:500;cursor:pointer;transition:all .2s ease;user-select:none}' +
     '.entry-chip input{display:none}' +
     '.entry-chip.on{background:var(--primary,#0a84ff);border-color:var(--primary,#0a84ff);color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(10,132,255,.35)}' +
     '.entry-actions{display:flex;gap:10px;margin-top:14px;align-items:center}' +
-    '.entry-save{background:#e5e9f0 !important;color:#9aa3b2 !important;cursor:not-allowed !important;border:none !important;box-shadow:none !important;transition:all .25s ease !important;opacity:.8}' +
+    '.entry-save{background:var(--badge-off) !important;color:var(--muted) !important;cursor:not-allowed !important;border:none !important;box-shadow:none !important;transition:all .25s ease !important;opacity:.8}' +
     '.entry-save.dirty{background:var(--primary,#0a84ff) !important;color:#fff !important;cursor:pointer !important;box-shadow:0 2px 10px rgba(10,132,255,.35) !important;opacity:1}';
   document.head.appendChild(st);
 }
@@ -728,7 +728,7 @@ async function loadEntry(){
     if (!list.length) list = [{ host: '', port: '', sni: '', wsHost: '', remark: '', transports: [] }];
     ensureEntryStyle();
     mc.innerHTML = '<div class="page-title">入口设置</div>' +
-      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（ws/grpc/h2 全协议）。</div>' +
+      '<div class="card" style="background:var(--ok-bg);color:var(--ok-text);font-size:13px;border-radius:10px;padding:12px 16px;margin-bottom:16px">支持配置多个入口，每个入口可独立选择支持的协议（ws / grpc / h2 / xhttp）。访问对应入口域名时，单凭据页与单凭据订阅只输出该入口勾选的协议；聚合订阅在设置了入口后仅生成各入口勾选的协议。未设置任何入口时使用当前域名（全协议）。</div>' +
       '<div id="entryCards">' + list.map(entryCardHtml).join('') + '</div>' +
       '<div class="entry-actions"><button class="btn small" onclick="addEntry()">+ 添加入口</button>' +
       '<button id="saveEntryBtn" class="btn small entry-save" onclick="saveEntry()" disabled>保存入口设置</button></div>';

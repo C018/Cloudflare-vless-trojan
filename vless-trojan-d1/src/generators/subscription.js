@@ -1,7 +1,8 @@
 /**
  * Generators: single node links, subscription output (plain / clash / sing-box)
- * 入站传输模式（config.entryTransport: ws / grpc / xhttp）决定链接/配置的 network 与 path/serviceName；
- * h2 分支保留用于显式配置 transports 含 h2 的旧客户端（sing-box http transport / 旧版 xray）。
+ * 入站传输模式（ws / grpc / h2 / xhttp）决定链接/配置的 network 与 path/serviceName；
+ * xhttp 节点统一输出 mode=stream-one（xray auto 依赖跨请求会话，CF 无状态环境不可靠，订阅不生成 auto）；
+ * h2 分支（sing-box http transport / 旧版 xray）与 ws 保留兼容。
  */
 
 // 0-RTT 参数（?ed=2560）与默认 TLS 指纹（random）
@@ -94,13 +95,13 @@ export function resolveHost(request) {
 
 /**
  * 构建聚合节点列表（vless 多 uuid + trojan 多密码）
- * 入站已支持全类型自动（ws/grpc/xhttp），每个用户输出三种传输节点；
+ * 每个用户输出白名单内全部传输类型节点（ws / grpc / h2 / xhttp）；
  * h2 节点生成分支保留：entry 显式配置 transports 含 h2 时仍可输出旧版链接。
  * 每个用户优先使用其自定义入站路径（u.path），未设置时回退全局 config.wsPath。
  * @param {Object} config
  * @param {Object} p {host, port, tls, wsHost, sni}
  */
-export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'xhttp'];
+export const INBOUND_TRANSPORTS = ['ws', 'grpc', 'h2', 'xhttp'];
 
 export function buildNodeLinks(config, p) {
 	const links = [];

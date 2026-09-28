@@ -199,8 +199,12 @@ Worker 页面 → **Settings** → **Domains & Routes** → **Add custom domain*
 1. 访问 `https://<你的域名>/admin`，页面会显示**首次部署初始密码**（自动生成并落库，登录后请及时修改）。
 2. 在后台添加 VLESS 用户（UUID）与 Trojan 用户（密码）。
 3. 订阅地址：
-   - 聚合订阅：`https://<域名>/subscribe?token=<admin密码>`
-   - 单凭据页：`https://<域名>/uuid=<UUID>` 或 `https://<域名>/password=<密码>`
+   - 聚合订阅：`https://<域名>/subscribe?token=<token>`，token 支持三种：
+     - `<admin密码>`：返回全部用户的聚合订阅；
+     - `<UUID>`：仅返回该 UUID（vless）用户的订阅；
+     - `<密码>`：仅返回该 trojan 密码用户的订阅。
+   - 单凭据页：`https://<域名>/<UUID>` 或 `https://<域名>/<密码>`
+   - 单凭据订阅：`https://<域名>/<UUID>/subscribe` 或 `https://<域名>/<密码>/subscribe`
    - 客户端订阅需带 ws path（默认 `/`，可在后台系统设置修改）。
 4. 后台可管理出站代理、分流规则、查看流量统计、运行网络状态检测；「Geo 规则库」菜单可查看规则库版本与落库统计、按关键词查询可用 geo 规则（点击复制），并点击「更新规则」触发异步全量更新（弹窗实时显示逐分类进度）。
 
