@@ -17,6 +17,40 @@ import { decideRoute } from '../routing/engine.js';
 // VLESS 空包帧（0x00 0x00）：服务端握手响应头与心跳保活帧内容相同，复用同一常量避免每连接/每心跳分配
 const VLESS_EMPTY_FRAME = new Uint8Array([0x00, 0x00]);
 
+// ---- 心跳共享扫描器（B） ----
+// 所有 TCP 会话注册到同一 5s 定时器，避免每连接一个常驻 setInterval：
+// CF 建议 isolate 内 timer < 1000，千级并发长连接时每连接一个 timer 会逼近上限并放大平台调度压力。
+// UDP 空闲清理（15s 轮询、会话量小）保持独立实现。
+const HEARTBEAT_INTERVAL = 15000;
+const HEARTBEAT_SCAN_MS = 5000;
+const heartbeatSessions = new Set(); // { isClosed(), lastActivity(), beat(now) }
+let heartbeatTimer = null;
+function registerHeartbeat(session) {
+	heartbeatSessions.add(session);
+	if (!heartbeatTimer) {
+		heartbeatTimer = setInterval(() => {
+			const now = Date.now();
+			for (const s of heartbeatSessions) {
+				if (s.isClosed()) { heartbeatSessions.delete(s); continue; }
+				if (now - s.lastActivity() >= HEARTBEAT_INTERVAL) s.beat(now);
+			}
+			if (heartbeatSessions.size === 0) {
+				clearInterval(heartbeatTimer);
+				heartbeatTimer = null;
+			}
+		}, HEARTBEAT_SCAN_MS);
+	}
+}
+function unregisterHeartbeat(session) {
+	heartbeatSessions.delete(session);
+}
+
+// ---- 上行小帧合并常量（C） ----
+// 与下行合并对称但阈值更保守（8KB）：针对 ACK/控制帧密集流降低 WS send 次数提吞吐；
+// 交互窗口内与大帧仍直通，上传首包延迟不受影响。
+const UPSTREAM_MERGE_TARGET = 8 * 1024;
+const UPSTREAM_MERGE_FLUSH_TIMEOUT = 15;
+
 // 下行批处理合并（CF 官方建议：将多条逻辑消息打包为单个 WebSocket 帧发送，降低上下文切换开销）。
 // 背景：单 DO 约 1000 req/s 软上限 + 高频小消息的 JS<->底层上下文切换先于字节量打爆单对象，
 // 表现为高吞吐持续转发下"冲高->排队/过载->回落"的锯齿吞吐。合并目标：小帧累积到 32KB 再 send，
@@ -158,15 +192,14 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	let interactiveUntil = 0;
 	// VLESS 空包心跳保活：CF Workers 平台约 30s 无数据活动即断开 WebSocket，
 	// 空闲超过阈值时向客户端发空包帧（0x00 0x00），保持连接活跃（xray/sing-box 客户端原生支持空包探测）。
-	const HEARTBEAT_INTERVAL = 15000;
+	// 心跳定时器全局共享（见 registerHeartbeat），连接只需注册会话并维护 lastActivity，不持有独立 timer。
 	let lastActivity = Date.now();
-	const heartbeatTimer = setInterval(() => {
-		if (closed) return;
-		if (Date.now() - lastActivity >= HEARTBEAT_INTERVAL) {
-			lastActivity = Date.now();
-			io.write(VLESS_EMPTY_FRAME).catch(() => { /* ignore */ });
-		}
-	}, 5000);
+	const heartbeatSession = {
+		isClosed: () => closed,
+		lastActivity: () => lastActivity,
+		beat: (now) => { lastActivity = now; io.write(VLESS_EMPTY_FRAME).catch(() => { /* ignore */ }); }
+	};
+	registerHeartbeat(heartbeatSession);
 	// 直连首包等待超时（对齐 Vless_workers_pages：直连无数据 → retry proxyip）
 	const DIRECT_FIRST_PACKET_TIMEOUT = 5000;
 	// 当前 direct 路由元信息：是否已走 proxyip
@@ -208,8 +241,30 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 		}
 	};
 
-	// io -> remote（客户端上行，全程直通：最小延迟优先，不做小包合并）
+	// io -> remote（客户端上行，对称下行合并：交互窗口内与大帧直通，小帧累积到 8KB 或 15ms 兜底 flush，
+	// 针对 ACK/控制帧密集流降低 WS send 次数提吞吐；上传首包由交互检测保障不被合并延迟）
 	const upstream = (async () => {
+		let accBuf = null;
+		let accLen = 0;
+		let flushTimer = null;
+		const armFlush = () => {
+			if (flushTimer) return;
+			flushTimer = setTimeout(() => {
+				flushTimer = null;
+				if (accLen > 0) {
+					const chunk = accBuf.subarray(0, accLen);
+					accBuf = null; accLen = 0;
+					writer.write(chunk).catch(() => { /* ignore */ });
+				}
+			}, UPSTREAM_MERGE_FLUSH_TIMEOUT);
+		};
+		const flushAcc = async () => {
+			if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+			if (accLen > 0) {
+				await writer.write(accBuf.subarray(0, accLen));
+				accBuf = null; accLen = 0;
+			}
+		};
 		try {
 			for (;;) {
 				const chunk = await io.read();
@@ -217,14 +272,33 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 				if (chunk.byteLength === 0) continue;
 				upBytes += chunk.byteLength;
 				lastActivity = Date.now();
-				// 交互检测：上行帧间隔 > INTERACTIVE_GAP_MS → 打开交互窗口（下行小帧直通不合并）
+				// 交互检测：上行帧间隔 > INTERACTIVE_GAP_MS → 打开交互窗口（上行小帧直通不合并）
 				const now = Date.now();
 				if (now - lastUpstreamFrameAt > INTERACTIVE_GAP_MS) {
 					interactiveUntil = now + INTERACTIVE_WINDOW_MS;
 				}
 				lastUpstreamFrameAt = now;
-				await writer.write(chunk);
+				// 交互窗口内 / 大帧（≥8KB）直通：保交互延迟与大包吞吐
+				if (now < interactiveUntil || chunk.byteLength >= UPSTREAM_MERGE_TARGET) {
+					await flushAcc();
+					await writer.write(chunk);
+					continue;
+				}
+				// 小帧累积合并
+				const need = accLen + chunk.byteLength;
+				if (!accBuf) accBuf = new Uint8Array(Math.max(need, 4096));
+				else if (need > accBuf.length) {
+					const nb = new Uint8Array(Math.max(accBuf.length * 2, need));
+					nb.set(accBuf.subarray(0, accLen), 0);
+					accBuf = nb;
+				}
+				accBuf.set(chunk, accLen);
+				accLen = need;
+				if (accLen >= UPSTREAM_MERGE_TARGET) await flushAcc();
+				else armFlush();
 			}
+			// EOF：flush 剩余累积
+			await flushAcc();
 		} catch (e) {
 			log(`upstream read error: ${e.message}`);
 		}
@@ -397,7 +471,7 @@ async function handleTCP(io, config, addressType, addressRemote, portRemote, fir
 	}
 
 	closed = true;
-	clearInterval(heartbeatTimer);
+	unregisterHeartbeat(heartbeatSession);
 	try { writer.releaseLock(); } catch (e) { /* ignore */ }
 	try { await remoteSocket.writable.close(); } catch (e) { /* ignore */ }
 	try { await io.close(); } catch (e) { /* ignore */ }

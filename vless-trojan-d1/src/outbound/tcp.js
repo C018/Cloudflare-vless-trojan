@@ -388,7 +388,14 @@ async function directConnect(config, hostname, port, initialData, log) {
 	// （若真是 CF 站点，首包 5s 无响应回退 proxyip 兜底），也不让 DoH miss 时拖慢正常域名建连。
 	let cfResolvedDomain = false;
 	if (proxyipEnabled && !proxyipDown && !isIpLiteral && !cfDomain) {
-		const ip = await resolveViaDoH(hostname, log, 'A', 800);
+		// DoH 判定改为 150ms 有限等待：缓存命中（300s 正/45s 负）时仍 O(1) 返回，
+		// miss/慢时不阻塞普通站点建连（判定放弃后 CF 站点仍由 5s 首包回退 proxyip 兜底）
+		let raceTimer = null;
+		const ip = await Promise.race([
+			resolveViaDoH(hostname, log, 'A', 800),
+			new Promise((r) => { raceTimer = setTimeout(() => r(null), 150); })
+		]);
+		clearTimeout(raceTimer);
 		if (ip && isCloudflareIp(ip)) {
 			cfResolvedDomain = true;
 		}
