@@ -1,0 +1,31 @@
+# vless-trojan-d1 Caddyfile
+# 环境变量由 docker compose 注入（DOMAIN / ACME_EMAIL 来自 .env）
+
+# 全局配置：ACME 账户邮箱（可选，用于证书到期通知；留空则 Caddy 自动处理）
+{
+	email {$ACME_EMAIL:off}
+}
+
+# ── 模式一（默认）：正式域名 + 自动 HTTPS ─────────────────────────────
+# Caddy 自动向 Let's Encrypt 申请并续期证书。
+# 前提：DOMAIN 的 A/AAAA 记录已解析到本机公网 IP，且服务器 80/443 端口对外可达。
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy worker:8787
+}
+
+# ── 模式二：挂载已有证书（可选）──────────────────────────────────────
+# 将证书放入 ./certs/ 目录（fullchain.pem + privkey.pem），
+# 注释掉上方 {$DOMAIN} 块后启用下面这个块（并把证书文件名换成你的）：
+# {$DOMAIN} {
+# 	encode gzip
+# 	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+# 	reverse_proxy worker:8787
+# }
+
+# ── 模式三：内部/无证书（纯 HTTP，不需要域名与证书）────────────────────
+# 注释掉上方 {$DOMAIN} 块，启用下面这个块；此时 .env 中 DOMAIN 可留空：
+# :80 {
+# 	encode gzip
+# 	reverse_proxy worker:8787
+# }

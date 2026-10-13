@@ -1,0 +1,80 @@
+# vless-trojan-d1 Docker Compose 编排
+# 服务：
+#   worker —— 运行 _worker.js 的本地运行时容器（数据持久化在 worker-data volume）
+#   caddy  —— 反向代理 + 自动 HTTPS（Let's Encrypt 证书自动申请/续期）
+#   cron   —— 每日 03:00 触发 wrangler 本地 scheduled 事件（本地模式 Cron 不会自动触发，需手动触发）
+#
+# 使用：
+#   cd docker
+#   cp .env.example .env   # 修改 DOMAIN 等
+#   docker compose up -d --build
+
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: vless-trojan-d1
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      PORT: "8787"
+    volumes:
+      - worker-data:/data
+    ports:
+      # 仅绑定本机回环，便于调试；公网访问一律走 Caddy(443/80)
+      - "127.0.0.1:8787:8787"
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/admin').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vless-trojan-d1-caddy
+    restart: unless-stopped
+    depends_on:
+      - worker
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 已有证书挂载目录（可选）：将 fullchain.pem / privkey.pem 放入 ./certs/
+      - ./certs:/etc/caddy/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - appnet
+
+  cron:
+    image: alpine:3
+    container_name: vless-trojan-d1-cron
+    restart: unless-stopped
+    depends_on:
+      - worker
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+        echo "0 3 * * * curl -fsS --max-time 300 http://worker:8787/cdn-cgi/local/scheduled >/dev/null 2>&1" > /etc/crontabs/root
+        echo "[cron] geo update scheduled daily at 03:00 (container timezone, UTC by default)"
+        crond -f -l 2
+    networks:
+      - appnet
+
+volumes:
+  worker-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  appnet:
+    driver: bridge

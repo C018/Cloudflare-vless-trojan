@@ -1,0 +1,11 @@
+# vless-trojan-d1 .dockerignore（交付模板）
+# 说明：Docker 的 .dockerignore 只有在 build context 根目录才会生效。
+# 本 compose 的 build context 是项目根，因此使用前请先复制到项目根目录：
+#   cp docker/.dockerignore .dockerignore
+# （即使不复制也可正常构建：Dockerfile 采用白名单 COPY，不会把 node_modules 等打进镜像。）
+
+node_modules
+.wrangler
+.git
+temp
+*.log
